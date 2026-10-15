@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.local-cache/
+# 检索包含 1879 篇真实客户资料（18.7 MB），只保留本机文件，绝不入库。
+functions/retrieval-bundle.json
+# FBI 运行产物（会话、日报、缓存）只在本机，不进仓库。
+.fbi_data_claw/
+.env
+.env.*
+!.env.example
+.DS_Store
+*.tsbuildinfo
+__pycache__/
+*.pyc
+.qoder-sites/
+.qoder-sites.json

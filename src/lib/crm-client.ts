@@ -1,0 +1,112 @@
+import type { CrmSnapshot, InsightRecord, RefreshStatus } from "./crm-types";
+
+const SAFE_ERRORS = new Set([
+  "snapshot_unavailable",
+  "not_found",
+  "invalid_request",
+  "invalid_cid",
+  "customer_not_found",
+  "busy",
+  "rate_limited",
+  "origin_not_allowed",
+  "host_not_allowed",
+]);
+
+export class CrmClientError extends Error {
+  readonly code: string;
+
+  constructor(code: string) {
+    super(code);
+    this.name = "CrmClientError";
+    this.code = code;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function localUrl(path: string, query?: Record<string, string>): URL {
+  const origin = typeof window === "undefined" ? "http://localhost" : window.location.origin;
+  const url = new URL(path, origin);
+  for (const [key, value] of Object.entries(query ?? {})) url.searchParams.set(key, value);
+  return url;
+}
+
+async function request(path: string, init: RequestInit & { query?: Record<string, string> }, fetchImpl: typeof fetch) {
+  let response: Response;
+  try {
+    response = await fetchImpl(localUrl(path, init.query), { ...init, signal: AbortSignal.timeout(15_000) });
+  } catch {
+    throw new CrmClientError("unavailable");
+  }
+  const payload: unknown = await response.json().catch(() => undefined);
+  if (!response.ok || !isRecord(payload) || payload.ok !== true) {
+    const code = isRecord(payload) && typeof payload.error === "string" && SAFE_ERRORS.has(payload.error)
+      ? payload.error
+      : "unavailable";
+    throw new CrmClientError(code);
+  }
+  return payload;
+}
+
+function isSnapshot(value: unknown): value is CrmSnapshot {
+  if (!isRecord(value) || value.schemaVersion !== 1 || !isRecord(value.sources)) return false;
+  return ["agenda", "todos", "customers", "projects"].every((key) => Array.isArray(value[key]));
+}
+
+function isRefreshStatus(value: unknown): value is RefreshStatus {
+  return isRecord(value) && ["idle", "running", "succeeded", "failed"].includes(String(value.state));
+}
+
+function isInsight(value: unknown): value is InsightRecord {
+  return isRecord(value) && typeof value.cid === "string" && ["running", "done", "failed"].includes(String(value.state));
+}
+
+export async function fetchCrmSnapshot(fetchImpl: typeof fetch = fetch): Promise<{ snapshot: CrmSnapshot; refresh: RefreshStatus | null }> {
+  const payload = await request("/local/crm/snapshot", { method: "GET" }, fetchImpl);
+  if (!isSnapshot(payload.data)) throw new CrmClientError("invalid_response");
+  return { snapshot: payload.data, refresh: isRefreshStatus(payload.refresh) ? payload.refresh : null };
+}
+
+export async function fetchRefreshStatus(fetchImpl: typeof fetch = fetch): Promise<RefreshStatus> {
+  const payload = await request("/local/crm/refresh", { method: "GET" }, fetchImpl);
+  if (!isRefreshStatus(payload.data)) throw new CrmClientError("invalid_response");
+  return payload.data;
+}
+
+export async function startCrmRefresh(fetchImpl: typeof fetch = fetch): Promise<RefreshStatus> {
+  const payload = await request("/local/crm/refresh", { method: "POST" }, fetchImpl);
+  if (!isRefreshStatus(payload.data)) throw new CrmClientError("invalid_response");
+  return payload.data;
+}
+
+export async function fetchInsight(cid: string, fetchImpl: typeof fetch = fetch): Promise<InsightRecord | null> {
+  const payload = await request("/local/fbi/insight", { method: "GET", query: { cid } }, fetchImpl);
+  if (payload.data === null) return null;
+  if (!isInsight(payload.data)) throw new CrmClientError("invalid_response");
+  return payload.data;
+}
+
+export async function startInsight(cid: string, fetchImpl: typeof fetch = fetch): Promise<InsightRecord> {
+  const payload = await request("/local/fbi/insight", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ cid }),
+  }, fetchImpl);
+  if (!isInsight(payload.data)) throw new CrmClientError("invalid_response");
+  return payload.data;
+}
+
+export function crmErrorMessage(error: unknown): string {
+  const code = error instanceof CrmClientError ? error.code : "unavailable";
+  const messages: Record<string, string> = {
+    unavailable: "本机服务未响应，请确认已启动 npm run dev:function。",
+    snapshot_unavailable: "还没有客户快照，点击“刷新数据”生成第一份。",
+    customer_not_found: "快照里没有这个客户，请先刷新鲲鹏数据。",
+    busy: "FBI 解读任务较多，请稍后再试。",
+    rate_limited: "请求过于频繁，请稍后再试。",
+    invalid_response: "本机服务返回了无法识别的数据。",
+  };
+  return messages[code] ?? "请求未完成，请稍后重试。";
+}
