@@ -1,5 +1,7 @@
 export type ViewId =
   | "cockpit"
+  | "customers"
+  | "dingtalk"
   | "lifecycle"
   | "overview"
   | "ask"

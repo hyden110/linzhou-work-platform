@@ -1,5 +1,20 @@
-export type SourceKey = "agenda" | "todos" | "customers" | "projects";
+export type SourceKey =
+  | "agenda"
+  | "todos"
+  | "groups"
+  | "mentions"
+  | "unread"
+  | "customers"
+  | "projects"
+  | "overview"
+  | "top"
+  | "mygroups";
 export type SourceState = "ok" | "partial" | "auth_required" | "error" | "missing";
+
+export interface TopChecks {
+  gaapMonotonicDesc: boolean;
+  countWithinLimit: boolean;
+}
 
 export interface SourceStatus {
   status: SourceState;
@@ -9,6 +24,13 @@ export interface SourceStatus {
   count: number;
   complete: boolean;
   stale: boolean;
+  /** 鲲鹏列表类数据源的条数元信息（customers/projects/top 等）。 */
+  total?: number | null;
+  /** 仅 top 段：鲲鹏自带的顺序/条数自检，false 表示口径异常必须上报警告。 */
+  checks?: TopChecks;
+  metric?: string | null;
+  orderBy?: string | null;
+  queriedAt?: string | null;
 }
 
 export interface AgendaItem {
@@ -56,14 +78,67 @@ export interface ProjectItem {
   createdAt: string | null;
 }
 
+export interface OverviewMetric {
+  id: string | null;
+  label: string;
+  value: number;
+  unit: string | null;
+  category: string | null;
+}
+
+export interface TopCustomerItem {
+  rank: number;
+  cid: string;
+  name: string;
+  industry: string | null;
+  area: string | null;
+  level: string | null;
+  lastMonthGaap: number | null;
+  yesterdayGaap: number | null;
+}
+
+export interface MyGroupView {
+  id: string;
+  name: string;
+  group: string | null;
+  count: number;
+}
+
+export interface GroupItem {
+  id: string;
+  name: string;
+  type: string | null;
+  memberCount: number;
+}
+
+export interface MentionItem {
+  id: string;
+  conversationId: string;
+  conversationName: string | null;
+  sender: string | null;
+  text: string;
+  time: string | null;
+}
+
+export interface UnreadItem {
+  id: string;
+  name: string | null;
+}
+
 export interface CrmSnapshot {
   schemaVersion: 1;
   generatedAt: string | null;
   sources: Partial<Record<SourceKey, SourceStatus>>;
   agenda: AgendaItem[];
   todos: TodoItem[];
+  groups: GroupItem[];
+  mentions: MentionItem[];
+  unread: UnreadItem[];
   customers: CustomerItem[];
   projects: ProjectItem[];
+  overview: OverviewMetric[];
+  top: TopCustomerItem[];
+  mygroups: MyGroupView[];
 }
 
 export interface RefreshStatus {

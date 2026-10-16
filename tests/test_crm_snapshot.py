@@ -17,6 +17,22 @@ def dws_payloads() -> dict[tuple[str, ...], dict[str, object]]:
             {"eventId": "e1", "title": "客户周会", "start": "2026-10-14 09:30", "end": "2026-10-14 10:00"}]}},
         commands["todos"]: {"ok": True, "outcome": "success", "data": {"tasks": [
             {"taskId": "t1", "title": "补方案", "priority": 40, "planFinishDate": 1760500000000}]}},
+        # Shape read back from dws on 2026-10-15: pagination that cannot be proven
+        # complete exits 1 with `complete:false` while still listing every group.
+        commands["groups"]: {"complete": False, "count": 2, "failedCount": 1, "failures": [
+            {"error": "我的群列表下层未返回可靠的 hasMore，无法证明结果完整", "page": 6, "stage": "pagination"}],
+            "groups": [
+                {"conversationId": "cidA==", "memberCount": 16891, "name": "示例科技铁三角", "type": "INTERNAL_GROUP",
+                 "secretPreview": "drop me"},
+                {"conversationId": "cidB==", "memberCount": 12, "name": "内部闲聊群", "type": "NORMAL_GROUP"}]},
+        commands["mentions"]: {"complete": True, "count": 1, "truncated": False, "items": [
+            {"conversation": {"name": "示例科技铁三角", "openConversationId": "cidA=="},
+             "conversationId": "cidA==", "messageId": "msgX==", "sender": "同事甲",
+             "text": "x" * 200, "time": "2026-10-15 09:44:29", "contentExtra": "drop me"},
+            {"conversationId": "cidA==", "sender": "同事乙", "text": "缺 messageId 必须被丢弃"}]},
+        commands["unread"]: {"conversations": [
+            {"conversationId": "cidA==", "name": "示例科技铁三角"},
+            {"conversationId": "cidC==", "name": "未读群"}]},
     }
 
 
@@ -30,12 +46,41 @@ class FakeDws:
         return self.payloads[arguments]
 
 
-def kunpeng_ok(arguments: tuple[str, ...]) -> dict[str, object]:
+def kunpeng_ok(arguments: tuple[str, ...]) -> object:
     if arguments[0] == "customers":
         return {"success": True, "total": 1, "rows": [{
             "cid": "1001", "name": "示例科技有限公司", "bizCategoryInfo": {"name": "互联网"},
             "extLastMonthGaap": "12,345.6", "extGaapD": 400, "extGaapDRate": -0.4079,
             "customers": [{"secret": "should not leak"}]}]}
+    if arguments[0] == "overview":
+        # Shape read back from 鲲鹏 on 2026-10-15: the real number sits in `data`
+        # (the `value` field mirrors the metric id); a null `data` means no number.
+        return {"metrics": [], "values": [
+            {"id": 25, "value": "25", "data": 35, "label": "客户数", "unitName": "个", "categoryCodeName": None},
+            {"id": 26, "value": "26", "data": 257705.93, "label": "昨日GAAP", "unitName": "元", "categoryCodeName": "支付口径"},
+            {"id": 27, "value": "27", "data": 96868.05, "label": "日GAAP环比涨跌额", "unitName": "元", "categoryCodeName": "支付口径"},
+            {"id": 28, "value": "28", "data": 60.23, "label": "日GAAP环比", "unitName": "%", "categoryCodeName": "支付口径"},
+            {"id": 31, "value": "31", "data": None, "label": "日GAAP环比（混合云）", "unitName": "%", "categoryCodeName": None},
+        ]}
+    if arguments[0] == "top":
+        return {
+            "view": {"id": 186, "name": "全部客户"},
+            "orderBy": "extLastMonthGaap-DESC", "metric": "last_month_gaap", "limit": 10,
+            "total": 35, "queriedAt": "2026-10-15 13:53:51",
+            "checks": {"countWithinLimit": True, "gaapMonotonicDesc": True},
+            "items": [
+                {"rank": 1, "name": "示例科技", "cid": 1001, "industry": "互联网", "area": "浙江省/杭州市",
+                 "gcLevel": "GC7", "lastMonthGaap": 2491393.74, "yesterdayGaap": 69888.41},
+            ],
+        }
+    if arguments[0] == "mygroups":
+        return [
+            {"id": 64, "name": "我的客户", "views": [
+                {"id": 186, "name": "全部客户", "cidCount": 35},
+                {"id": 187, "name": "商务关联客户", "cidCount": 0},
+                {"id": 14156, "name": "待我交接的客户", "cidCount": 0},
+            ]},
+        ]
     # Shapes and encodings read back from 鲲鹏 on 2026-10-14: rate is a decimal
     # ratio, winRate and projectStatus are enum codes, dates are epoch millis.
     return {"success": True, "total": 1, "rows": [{
@@ -64,8 +109,13 @@ class CrmSnapshotTest(unittest.TestCase):
 
     def test_projects_only_safe_fields(self) -> None:
         snapshot = self.build()
-        self.assertEqual(set(crm_snapshot.SECTIONS), {"agenda", "todos", "customers", "projects"})
-        self.assertNotIn("groups", snapshot)
+        self.assertEqual(
+            set(crm_snapshot.SECTIONS),
+            {"agenda", "todos", "groups", "mentions", "unread",
+             "customers", "projects", "overview", "top", "mygroups"},
+        )
+        for name in crm_snapshot.SECTIONS:
+            self.assertIn(name, snapshot)
         customer = snapshot["customers"][0]
         self.assertEqual(customer["industry"], "互联网")
         self.assertEqual(customer["lastMonthGaap"], 12345.6)
@@ -76,16 +126,62 @@ class CrmSnapshotTest(unittest.TestCase):
         self.assertNotIn("businessManager", project)
         self.assertNotIn("should not leak", self.output.read_text(encoding="utf-8"))
         self.assertNotIn("某同学", self.output.read_text(encoding="utf-8"))
+        self.assertNotIn("drop me", self.output.read_text(encoding="utf-8"))
+
+    def test_overview_skips_metrics_without_data(self) -> None:
+        overview = self.build()["overview"]
+        labels = [metric["label"] for metric in overview]
+        self.assertIn("客户数", labels)
+        self.assertNotIn("日GAAP环比（混合云）", labels)
+        gaap = next(metric for metric in overview if metric["id"] == "26")
+        self.assertEqual(gaap["value"], 257705.93)
+        self.assertEqual(gaap["category"], "支付口径")
+
+    def test_top_is_queried_and_carries_kunpeng_self_checks(self) -> None:
+        calls: list[tuple[str, ...]] = []
+
+        def kunpeng(arguments: tuple[str, ...]) -> object:
+            calls.append(arguments)
+            return kunpeng_ok(arguments)
+
+        snapshot = self.build(kunpeng=kunpeng)
+        self.assertIn(("top", "--limit", str(crm_snapshot.TOP_LIMIT), "--metric", "last_month_gaap"), calls)
+        source = snapshot["sources"]["top"]
+        self.assertIs(source["checks"]["gaapMonotonicDesc"], True)
+        self.assertIs(source["checks"]["countWithinLimit"], True)
+        self.assertEqual(source["orderBy"], "extLastMonthGaap-DESC")
+        self.assertEqual(source["queriedAt"], "2026-10-15 13:53:51")
+        self.assertEqual(snapshot["top"][0]["rank"], 1)
+        self.assertEqual(snapshot["top"][0]["cid"], "1001")
+
+    def test_top_failed_self_check_is_preserved_not_silently_passed(self) -> None:
+        def kunpeng(arguments: tuple[str, ...]) -> object:
+            payload = kunpeng_ok(arguments)
+            if arguments[0] == "top":
+                assert isinstance(payload, dict)
+                payload["checks"] = {"countWithinLimit": True, "gaapMonotonicDesc": False}
+            return payload
+
+        source = self.build(kunpeng=kunpeng)["sources"]["top"]
+        self.assertIs(source["checks"]["gaapMonotonicDesc"], False)
+
+    def test_mygroups_flattens_views_with_counts(self) -> None:
+        mygroups = self.build()["mygroups"]
+        self.assertEqual([view["id"] for view in mygroups], ["186", "187", "14156"])
+        self.assertEqual(mygroups[0]["count"], 35)
+        self.assertEqual(mygroups[0]["group"], "我的客户")
 
     def test_live_project_rows_use_separate_id_and_name(self) -> None:
         # `projects --state normal` returned projectId (int) + projectName on 2026-10-14,
         # without projectNameAndId; ids must stay unique so the UI keys are stable.
-        def kunpeng(arguments: tuple[str, ...]) -> dict[str, object]:
+        def kunpeng(arguments: tuple[str, ...]) -> object:
             if arguments[0] == "customers":
                 return {"success": True, "total": 0, "rows": []}
-            return {"success": True, "total": 2, "rows": [
-                {"projectId": 9001, "projectName": "甲项目", "cid": 1001},
-                {"projectId": 9002, "projectName": "乙项目", "cid": 1001}]}
+            if arguments[0] == "projects":
+                return {"success": True, "total": 2, "rows": [
+                    {"projectId": 9001, "projectName": "甲项目", "cid": 1001},
+                    {"projectId": 9002, "projectName": "乙项目", "cid": 1001}]}
+            return kunpeng_ok(arguments)
 
         projects = self.build(kunpeng=kunpeng)["projects"]
         self.assertEqual([(p["id"], p["name"]) for p in projects], [("9001", "甲项目"), ("9002", "乙项目")])
@@ -109,6 +205,10 @@ class CrmSnapshotTest(unittest.TestCase):
         self.assertTrue(source["stale"])
         self.assertEqual(snapshot["customers"][0]["cid"], "1001")
         self.assertEqual(snapshot["sources"]["agenda"]["status"], "ok")
+        self.assertEqual(snapshot["sources"]["overview"]["status"], "auth_required")
+        self.assertEqual(snapshot["overview"][0]["label"], "客户数")
+        self.assertEqual(snapshot["top"][0]["rank"], 1)
+        self.assertEqual(snapshot["mygroups"][0]["id"], "186")
 
     def test_first_run_logged_out_has_no_fake_rows(self) -> None:
         snapshot = self.build(kunpeng=kunpeng_logged_out)
@@ -123,15 +223,65 @@ class CrmSnapshotTest(unittest.TestCase):
         self.assertEqual(snapshot["sources"]["agenda"]["error"], "dws_not_success")
         self.assertEqual(snapshot["sources"]["todos"]["status"], "ok")
 
+    def test_group_pagination_gap_is_partial_not_ok(self) -> None:
+        snapshot = self.build()
+        source = snapshot["sources"]["groups"]
+        self.assertEqual(source["status"], "partial")
+        self.assertFalse(source["complete"])
+        self.assertEqual(source["count"], 2)
+        self.assertEqual(snapshot["groups"][0],
+                         {"id": "cidA==", "name": "示例科技铁三角", "type": "INTERNAL_GROUP", "memberCount": 16891})
+
+    def test_mentions_truncate_text_and_drop_items_without_id(self) -> None:
+        snapshot = self.build()
+        mentions = snapshot["mentions"]
+        self.assertEqual(len(mentions), 1)
+        self.assertEqual(len(mentions[0]["text"]), crm_snapshot.MENTION_TEXT_LIMIT)
+        self.assertEqual(mentions[0]["conversationName"], "示例科技铁三角")
+        self.assertEqual(mentions[0]["sender"], "同事甲")
+        self.assertEqual(mentions[0]["time"], "2026-10-15 09:44:29")
+        self.assertNotIn("contentExtra", mentions[0])
+
+    def test_unread_keeps_identifier_and_name_only(self) -> None:
+        unread = self.build()["unread"]
+        self.assertEqual(unread[0], {"id": "cidA==", "name": "示例科技铁三角"})
+        self.assertEqual(len(unread), 2)
+
+    def test_run_dws_returns_payload_on_nonzero_exit_without_error_envelope(self) -> None:
+        # `chat +my-groups` exits 1 while printing the groups; the partial flag must survive.
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=1,
+            stdout=json.dumps({"complete": False, "count": 2, "failedCount": 1,
+                               "groups": [{"conversationId": "cidA==", "name": "群"}]}),
+            stderr="",
+        )
+        with mock.patch.object(crm_snapshot.shutil, "which", return_value="/usr/bin/dws"), mock.patch.object(
+            crm_snapshot.subprocess, "run", return_value=completed
+        ):
+            payload = crm_snapshot.run_dws(crm_snapshot.DWS_COMMANDS["groups"])
+        self.assertEqual(payload["count"], 2)
+        self.assertIs(payload["complete"], False)
+
+    def test_run_dws_nonzero_exit_without_json_still_fails(self) -> None:
+        completed = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="")
+        with mock.patch.object(crm_snapshot.shutil, "which", return_value="/usr/bin/dws"), mock.patch.object(
+            crm_snapshot.subprocess, "run", return_value=completed
+        ):
+            with self.assertRaises(crm_snapshot.SourceError) as caught:
+                crm_snapshot.run_dws(crm_snapshot.DWS_COMMANDS["unread"])
+        self.assertEqual(caught.exception.code, "dws_exit_1")
+
     def test_customer_paging_stops_at_total(self) -> None:
         calls: list[tuple[str, ...]] = []
 
-        def kunpeng(arguments: tuple[str, ...]) -> dict[str, object]:
+        def kunpeng(arguments: tuple[str, ...]) -> object:
             calls.append(arguments)
             if arguments[0] == "projects":
                 return {"success": True, "total": 0, "rows": []}
-            rows = [{"cid": f"{arguments[-1]}-{i}"} for i in range(crm_snapshot.CUSTOMER_PAGE_SIZE)]
-            return {"success": True, "total": crm_snapshot.CUSTOMER_PAGE_SIZE * 2, "rows": rows}
+            if arguments[0] == "customers":
+                rows = [{"cid": f"{arguments[-1]}-{i}"} for i in range(crm_snapshot.CUSTOMER_PAGE_SIZE)]
+                return {"success": True, "total": crm_snapshot.CUSTOMER_PAGE_SIZE * 2, "rows": rows}
+            return kunpeng_ok(arguments)
 
         snapshot = self.build(kunpeng=kunpeng)
         self.assertEqual(len(snapshot["customers"]), crm_snapshot.CUSTOMER_PAGE_SIZE * 2)

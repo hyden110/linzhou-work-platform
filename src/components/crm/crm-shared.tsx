@@ -5,8 +5,14 @@ import { useCrm } from "./CrmProvider";
 export const SOURCE_LABELS: Record<SourceKey, string> = {
   agenda: "钉钉日程",
   todos: "钉钉待办",
+  groups: "钉钉群列表",
+  mentions: "钉钉 @我",
+  unread: "钉钉未读",
   customers: "鲲鹏客户",
   projects: "鲲鹏项目",
+  overview: "鲲鹏总览",
+  top: "鲲鹏 TOP 榜",
+  mygroups: "鲲鹏分层视图",
 };
 
 const SOURCE_ERRORS: Record<string, string> = {
@@ -15,7 +21,7 @@ const SOURCE_ERRORS: Record<string, string> = {
   dws_missing: "dws 未安装",
 };
 
-const REFRESH_ERRORS: Record<string, string> = {
+export const REFRESH_ERRORS: Record<string, string> = {
   all_sources_failed: "全部数据源读取失败",
   refresh_timeout: "刷新超时",
   refresh_failed: "刷新失败",
@@ -52,6 +58,29 @@ export function formatGaap(value: number | null | undefined): string {
   if (value === null || value === undefined) return "—";
   if (Math.abs(value) >= 10_000) return `${(value / 10_000).toLocaleString("zh-CN", { maximumFractionDigits: 1 })} 万`;
   return value.toLocaleString("zh-CN", { maximumFractionDigits: 0 });
+}
+
+export function MetricCard({
+  label,
+  value,
+  note,
+  warning = false,
+  primary = false,
+}: {
+  label: string;
+  value: string;
+  note: string;
+  warning?: boolean;
+  primary?: boolean;
+}) {
+  return (
+    <article className={`metric-card ${primary ? "metric-card--primary" : ""} ${warning ? "metric-card--warning" : ""}`}>
+      {warning && <AlertTriangle className="metric-card__icon" size={17} />}
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <small>{note}</small>
+    </article>
+  );
 }
 
 function sourceProblem(status: SourceStatus): string {

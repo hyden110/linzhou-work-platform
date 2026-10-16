@@ -138,6 +138,18 @@ export function CustomerDrawer({ row, onClose }: { row: CustomerLifecycle; onClo
             )}
         </section>
 
+        <section className="crm-drawer__section">
+          <h3>ECID 画像 <small>鲲鹏企业画像</small></h3>
+          <p className="crm-muted">
+            本轮不展示画像数值：鲲鹏 CLI 的 customers 行没有 ecid 字段（CID ≠ ECID），
+            直接查询会返回「提交的 ecid 不存在」，value 等画像接口对无效 ID 不报错、只返回全空。
+            CID → ECID 的取数口径确认后再接入，这里不会用占位数字代替。
+          </p>
+          <button className="primary-button" disabled title="CID → ECID 口径待定，暂无法取数">
+            ECID 画像待接入（CID → ECID 口径待定）
+          </button>
+        </section>
+
         <InsightPanel cid={customer.cid} />
       </aside>
     </>,

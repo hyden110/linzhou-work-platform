@@ -1,4 +1,14 @@
-import type { CrmSnapshot, CustomerItem, ProjectItem } from "./crm-types";
+import type {
+  CrmSnapshot,
+  CustomerItem,
+  GroupItem,
+  MentionItem,
+  OverviewMetric,
+  ProjectItem,
+  TopChecks,
+  TopCustomerItem,
+  UnreadItem,
+} from "./crm-types";
 
 export type StageId = "A" | "B" | "C" | "D";
 
@@ -102,11 +112,84 @@ export function lifecycleBoard(snapshot: Pick<CrmSnapshot, "customers" | "projec
   });
 }
 
+// ---------------------------------------------------------------------------
+// 客户盘面：总览指标 / TOP 榜 / 分层视图
+// ---------------------------------------------------------------------------
+
+// Metric ids read back from 鲲鹏 `overview --view-id 186` on 2026-10-15. The real
+// number lives in the `data` field; the API's `value` field only mirrors the id.
+const CUSTOMER_COUNT_METRIC = "25";
+const YESTERDAY_GAAP_METRIC = "26";
+const GAAP_DIFF_METRIC = "27";
+const GAAP_RATE_METRIC = "28";
+const PROJECT_COUNT_METRIC = "47";
+
+export interface OverviewBoard {
+  customerCount: number | null;
+  /** 总览客户数与客户列表是否一致；不一致时 UI 必须显式标注「口径待确认」。 */
+  customerCountMatches: boolean;
+  yesterdayGaap: number | null;
+  yesterdayGaapDiff: number | null;
+  yesterdayGaapRate: number | null;
+  projectCount: number | null;
+  lastMonthGaapSum: number;
+  /** 昨日 GAAP 指标是否由鲲鹏标注为「支付口径」。 */
+  payBasis: boolean;
+}
+
+export function overviewBoard(snapshot: Pick<CrmSnapshot, "overview" | "customers">): OverviewBoard {
+  const byId = new Map<string, OverviewMetric>();
+  for (const metric of snapshot.overview) {
+    if (metric.id !== null) byId.set(metric.id, metric);
+  }
+  const value = (id: string) => byId.get(id)?.value ?? null;
+  const customerCount = value(CUSTOMER_COUNT_METRIC);
+  return {
+    customerCount,
+    customerCountMatches: customerCount !== null && customerCount === snapshot.customers.length,
+    yesterdayGaap: value(YESTERDAY_GAAP_METRIC),
+    yesterdayGaapDiff: value(GAAP_DIFF_METRIC),
+    yesterdayGaapRate: value(GAAP_RATE_METRIC),
+    projectCount: value(PROJECT_COUNT_METRIC),
+    lastMonthGaapSum: snapshot.customers.reduce((sum, customer) => sum + (customer.lastMonthGaap ?? 0), 0),
+    payBasis: byId.get(YESTERDAY_GAAP_METRIC)?.category === "支付口径",
+  };
+}
+
+export interface TopBoard {
+  items: TopCustomerItem[];
+  total: number | null;
+  queriedAt: string | null;
+  orderBy: string | null;
+  checks: TopChecks | null;
+  /** 鲲鹏自检未通过（或没有 checks 元信息）时为 false，UI 必须醒目告警。 */
+  checksOk: boolean;
+}
+
+export function topBoard(snapshot: Pick<CrmSnapshot, "top" | "sources">): TopBoard {
+  const source = snapshot.sources.top;
+  const checks = source?.checks ?? null;
+  return {
+    items: snapshot.top,
+    total: source?.total ?? null,
+    queriedAt: source?.queriedAt ?? null,
+    orderBy: source?.orderBy ?? null,
+    checks,
+    checksOk: checks === null ? true : checks.gaapMonotonicDesc && checks.countWithinLimit,
+  };
+}
+
+export function customersByGaap(customers: readonly CustomerItem[]): CustomerItem[] {
+  return [...customers].sort(
+    (a, b) => (b.lastMonthGaap ?? 0) - (a.lastMonthGaap ?? 0) || a.name.localeCompare(b.name, "zh-CN"),
+  );
+}
+
 export type Urgency = "overdue" | "today" | "soon" | "watch";
 
 export interface ActionItem {
   id: string;
-  kind: "todo" | "meeting";
+  kind: "todo" | "meeting" | "mention";
   title: string;
   detail: string;
   at: number | null;
@@ -140,19 +223,128 @@ function meetingActions(snapshot: Pick<CrmSnapshot, "agenda">, now: number, toda
   });
 }
 
+function mentionActions(snapshot: Pick<CrmSnapshot, "mentions">, now: number): ActionItem[] {
+  const todayStart = startOfDay(now);
+  return snapshot.mentions.flatMap((mention): ActionItem[] => {
+    const at = parseLocalTime(mention.time);
+    if (at === null || at > now) return [];
+    const urgency: Urgency = at >= todayStart ? "today" : at >= todayStart - DAY_MS ? "soon" : "watch";
+    const detail = [mention.conversationName, mention.sender].filter(Boolean).join(" · ") || "钉钉 @我";
+    return [{ id: `mention:${mention.id}`, kind: "mention", title: mention.text || "（无内容）", detail, at, urgency }];
+  });
+}
+
 export function actionQueue(
-  snapshot: Pick<CrmSnapshot, "todos" | "agenda">,
+  snapshot: Pick<CrmSnapshot, "todos" | "agenda" | "mentions">,
   now: number,
 ): ActionItem[] {
   const todayEnd = startOfDay(now) + DAY_MS;
   return [
     ...todoActions(snapshot, now, todayEnd),
     ...meetingActions(snapshot, now, todayEnd),
+    ...mentionActions(snapshot, now),
   ].sort((a, b) => URGENCY_RANK[a.urgency] - URGENCY_RANK[b.urgency] || byTime(a, b));
 }
+
+/** 同档内：时间敏感项（会议/待办）按临近顺序；@我 是响应型动作，组内最新优先。 */
+const KIND_TIER: Record<ActionItem["kind"], number> = { meeting: 0, todo: 0, mention: 1 };
 
 function byTime(a: ActionItem, b: ActionItem): number {
   // Most recently overdue first; long-stale items sink instead of crowding the top.
   if (a.urgency === "overdue") return (b.at ?? -Infinity) - (a.at ?? -Infinity);
+  const tier = KIND_TIER[a.kind] - KIND_TIER[b.kind];
+  if (tier !== 0) return tier;
+  if (a.kind === "mention") return (b.at ?? -Infinity) - (a.at ?? -Infinity);
   return (a.at ?? Infinity) - (b.at ?? Infinity);
+}
+
+// ---------------------------------------------------------------------------
+// 钉群盘面：群 ↔ 客户匹配 / @我 / 未读
+// ---------------------------------------------------------------------------
+
+/** 归一化群/客户名再做匹配：去空白、去装饰性括号与连接符、统一小写。 */
+export function normalizeGroupName(value: string): string {
+  return value
+    .replace(/\s+/g, "")
+    .replace(/[「」【】\[\]（）()《》<>]/g, "")
+    .replace(/[-_·—–|/+&]/g, "")
+    .toLowerCase();
+}
+
+/** 模糊匹配时较短一方的最小长度：低于此长度的重叠（如「云」）视为噪声。 */
+const MIN_FUZZY_LENGTH = 4;
+
+export type GroupLinkStatus = "linked" | "unconfirmed";
+
+export interface GroupLink {
+  group: GroupItem;
+  customer: CustomerItem;
+  status: GroupLinkStatus;
+}
+
+interface NameEntry {
+  customer: CustomerItem;
+  norm: string;
+}
+
+/** 匹配分级：精确或客户名完整前后缀 → 已关联；仅中缀互相包含 → 待确认。 */
+function matchGroup(norm: string, entries: readonly NameEntry[]): { customer: CustomerItem; status: GroupLinkStatus } | null {
+  if (norm.length === 0) return null;
+  const exact = entries.find((entry) => entry.norm === norm);
+  if (exact) return { customer: exact.customer, status: "linked" };
+  const longest = (candidates: readonly NameEntry[]) =>
+    [...candidates].sort((a, b) =>
+      b.norm.length - a.norm.length || a.customer.name.localeCompare(b.customer.name, "zh-CN"))[0]!;
+  const strong = entries.filter((entry) =>
+    entry.norm.length >= MIN_FUZZY_LENGTH && (norm.startsWith(entry.norm) || norm.endsWith(entry.norm)));
+  if (strong.length > 0) return { customer: longest(strong).customer, status: "linked" };
+  const weak = entries.filter((entry) => {
+    const shorter = Math.min(entry.norm.length, norm.length);
+    return shorter >= MIN_FUZZY_LENGTH && (entry.norm.includes(norm) || norm.includes(entry.norm));
+  });
+  if (weak.length > 0) return { customer: longest(weak).customer, status: "unconfirmed" };
+  return null;
+}
+
+export interface DingtalkBoard {
+  /** 每个群的匹配结果（精确=linked，疑似=unconfirmed），保持快照顺序。 */
+  links: GroupLink[];
+  /** 没有匹配到任何客户的群。 */
+  unlinked: GroupItem[];
+  /** 没有任何已关联或疑似群指向的客户（按上月 GAAP 降序）。 */
+  missingCustomers: CustomerItem[];
+  /** @我 消息，最新在前。 */
+  mentions: MentionItem[];
+  unread: UnreadItem[];
+}
+
+export function dingtalkBoard(
+  snapshot: Pick<CrmSnapshot, "groups" | "mentions" | "unread" | "customers">,
+): DingtalkBoard {
+  const entries: NameEntry[] = snapshot.customers.map((customer) => ({ customer, norm: normalizeGroupName(customer.name) }));
+  const links: GroupLink[] = [];
+  const unlinked: GroupItem[] = [];
+  const covered = new Set<string>();
+
+  for (const group of snapshot.groups) {
+    const matched = matchGroup(normalizeGroupName(group.name), entries);
+    if (matched) {
+      links.push({ group, customer: matched.customer, status: matched.status });
+      covered.add(matched.customer.cid);
+    } else {
+      unlinked.push(group);
+    }
+  }
+
+  const mentions = [...snapshot.mentions].sort(
+    (a, b) => (parseLocalTime(b.time) ?? 0) - (parseLocalTime(a.time) ?? 0),
+  );
+
+  return {
+    links,
+    unlinked,
+    missingCustomers: customersByGaap(snapshot.customers.filter((customer) => !covered.has(customer.cid))),
+    mentions,
+    unread: snapshot.unread,
+  };
 }

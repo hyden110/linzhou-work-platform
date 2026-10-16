@@ -6,11 +6,13 @@ import {
   Database,
   Gauge,
   LayoutDashboard,
+  MessagesSquare,
   Network,
   PanelLeftClose,
   PanelLeftOpen,
   RefreshCw,
   Sparkles,
+  Users,
   Workflow,
   X,
 } from "lucide-react";
@@ -33,6 +35,8 @@ const navigation: NavigationGroup[] = [
     eyebrow: "CUSTOMER OPS",
     items: [
       { id: "cockpit", label: "驾驶舱", icon: Gauge },
+      { id: "customers", label: "客户盘面", icon: Users },
+      { id: "dingtalk", label: "钉群盘面", icon: MessagesSquare },
       { id: "lifecycle", label: "客户生命周期", icon: Workflow },
     ],
   },

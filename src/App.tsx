@@ -4,6 +4,8 @@ import { LocalRuntimeProvider } from "./components/LocalRuntimeProvider";
 import { AssistantView } from "./components/AssistantView";
 import { CockpitView } from "./components/crm/CockpitView";
 import { CrmProvider } from "./components/crm/CrmProvider";
+import { CustomersView } from "./components/crm/CustomersView";
+import { DingtalkView } from "./components/crm/DingtalkView";
 import { LifecycleView } from "./components/crm/LifecycleView";
 import { KnowledgeMapView } from "./components/KnowledgeMapView";
 import { Sidebar } from "./components/Sidebar";
@@ -25,6 +27,8 @@ import type { KnowledgeDocument, KnowledgeIndex, ShelfId, ViewId } from "./types
 
 const viewTitles: Record<ViewId, string> = {
   cockpit: "驾驶舱",
+  customers: "客户盘面",
+  dingtalk: "钉群盘面",
   lifecycle: "客户生命周期",
   overview: "总览",
   ask: "AI 问答",
@@ -182,6 +186,8 @@ function Workbench() {
   };
   const view = {
     cockpit: <CockpitView />,
+    customers: <CustomersView />,
+    dingtalk: <DingtalkView />,
     lifecycle: <LifecycleView />,
     overview: <OverviewView {...commonProps} />,
     ask: <AskView {...commonProps} />,

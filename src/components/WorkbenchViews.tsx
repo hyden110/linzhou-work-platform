@@ -4,7 +4,6 @@ import {
   ArrowRight,
   Bot,
   CheckCircle2,
-  ChevronRight,
   CircleDot,
   Clock3,
   Cloud,
@@ -12,16 +11,20 @@ import {
   Filter,
   Layers3,
   Link2,
+  LoaderCircle,
   Network,
   RefreshCw,
   Search,
   ShieldCheck,
   Sparkles,
-  TerminalSquare,
   TrendingUp,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { formatBytes, formatDate } from "../data/format";
 import { ALL_CUSTOMERS, ALL_TRACKS, UNCLASSIFIED_CUSTOMER, UNCLASSIFIED_TRACK } from "../data/facets";
+import { useCrm } from "./crm/CrmProvider";
+import { REFRESH_ERRORS, SOURCE_LABELS, formatClock, formatDateTime } from "./crm/crm-shared";
+import type { SourceKey, SourceStatus } from "../lib/crm-types";
 import { groupCitationsByDocument, retrieveKnowledge, type RetrievalResponse } from "../lib/retrieval-client";
 import { DocumentFacetFilter, type DocumentFacets } from "./FacetFilter";
 import { DocumentRow } from "./DocumentRow";
@@ -246,20 +249,105 @@ export function DocumentsView({ documents, index, facets }: ViewProps & { facets
   );
 }
 
+const DWS_SOURCE_KEYS: readonly SourceKey[] = ["agenda", "todos", "groups", "mentions", "unread"];
+const KUNPENG_SOURCE_KEYS: readonly SourceKey[] = ["customers", "projects", "overview", "top", "mygroups"];
+const SOURCE_KEY_ORDER = Object.keys(SOURCE_LABELS) as SourceKey[];
+
+type BadgeTone = "green" | "amber" | "blue" | "muted";
+
+function connectorState(
+  sources: Partial<Record<SourceKey, SourceStatus>>,
+  keys: readonly SourceKey[],
+): { label: string; tone: BadgeTone } {
+  const states = keys.flatMap((key) => (sources[key] ? [sources[key] as SourceStatus] : []));
+  if (states.length === 0) return { label: "未初始化", tone: "muted" };
+  if (states.some((state) => state.status === "auth_required")) return { label: "待授权", tone: "amber" };
+  if (states.some((state) => state.status === "error")) return { label: "部分失败", tone: "amber" };
+  if (states.every((state) => state.status === "ok" && !state.stale)) return { label: "已连接", tone: "green" };
+  return { label: "部分接入", tone: "amber" };
+}
+
+function sourceState(state: SourceStatus | undefined): { label: string; tone: BadgeTone } {
+  if (!state) return { label: "未同步", tone: "muted" };
+  if (state.status === "auth_required") return { label: "待授权", tone: "amber" };
+  if (state.status === "error") return { label: "读取失败", tone: "amber" };
+  if (state.status === "partial") return { label: "部分数据", tone: "amber" };
+  if (state.status === "missing") return { label: "未同步", tone: "muted" };
+  return state.stale ? { label: "已过期", tone: "amber" } : { label: "正常", tone: "green" };
+}
+
 export function SyncView({ index }: ViewProps) {
-  const [notice, setNotice] = useState("");
-  const connectors = [
-    { name: "本地资料", detail: "案例库 + 场景库", status: "已盘点", tone: "green" as const, icon: Database, meta: `${index.stats.totalDocuments} 份元数据` },
-    { name: "钉钉文档", detail: "仅本人创建且仍有权限", status: "能力受限", tone: "amber" as const, icon: Link2, meta: "缺少完整的本人文档枚举接口" },
-    { name: "AI 听记", detail: "仅当前用户参与且未排除", status: "能力受限", tone: "amber" as const, icon: Bot, meta: "缺少权威的完整参会关系" },
-    { name: "云栖大会", detail: "qianwen CLI JSON", status: "待登录", tone: "amber" as const, icon: Cloud, meta: "只读命令已验证" },
-  ];
+  const { snapshot, refresh, refreshNow } = useCrm();
+  const running = refresh?.state === "running";
+  const sources = snapshot?.sources ?? {};
+  const dwsState = connectorState(sources, DWS_SOURCE_KEYS);
+  const kunpengState = connectorState(sources, KUNPENG_SOURCE_KEYS);
   const summary = index.syncSummary;
+
+  const completedAt = refresh?.finishedAt ?? snapshot?.generatedAt ?? null;
+  const completedTime = completedAt ? Date.parse(completedAt) : Number.NaN;
+  const completedClock = Number.isNaN(completedTime) ? "—" : formatClock(completedTime);
+  const schedule = running
+    ? {
+        clock: "同步中",
+        tone: "amber" as const,
+        label: "运行中",
+        note: "正在本机执行只读刷新（钉钉 dws + 鲲鹏 ecid 全量拉取），完成后快照自动更新。",
+      }
+    : refresh?.state === "failed"
+      ? {
+          clock: completedClock,
+          tone: "amber" as const,
+          label: "上次失败",
+          note: `上次同步失败：${REFRESH_ERRORS[refresh.error ?? ""] ?? "刷新失败"}。请检查本机 dev:function 日志后重试。`,
+        }
+      : snapshot
+        ? {
+            clock: completedClock,
+            tone: "blue" as const,
+            label: "按需触发",
+            note: `未配置定时任务；点击“手动同步”在本机触发一次只读刷新（POST /local/crm/refresh）。最近完成 ${formatDateTime(completedAt)}。`,
+          }
+        : {
+            clock: "—",
+            tone: "amber" as const,
+            label: "尚无快照",
+            note: "还没有客户快照；点击“手动同步”生成第一份。",
+          };
+
+  const connectors: { name: string; detail: string; status: string; tone: BadgeTone; icon: LucideIcon; meta: string }[] = [
+    { name: "本地资料", detail: "案例库 + 场景库", status: "已盘点", tone: "green", icon: Database, meta: `${index.stats.totalDocuments.toLocaleString("zh-CN")} 份元数据` },
+    { name: "钉钉连接器", detail: "dws 只读：日程 · 待办 · 群 · @我 · 未读", status: dwsState.label, tone: dwsState.tone, icon: Link2, meta: snapshot ? `群 ${snapshot.groups.length} · @我 ${snapshot.mentions.length} · 未读 ${snapshot.unread.length}` : "等待首次同步" },
+    { name: "鲲鹏客户数据", detail: "ecid 只读：客户 · 项目 · TOP · 分层视图", status: kunpengState.label, tone: kunpengState.tone, icon: Layers3, meta: snapshot ? `客户 ${snapshot.customers.length} · 项目 ${snapshot.projects.length}` : "等待首次同步" },
+    { name: "云栖大会", detail: "当前为本地 HTML 整理稿解析", status: "已解析", tone: "green", icon: Cloud, meta: "qianwen CLI 已存在但未登录" },
+  ];
+
   return (
     <div className="view-stack">
-      <ViewHeading eyebrow="SYNC OPERATIONS / 07" title="同步中心" description="监控本地索引和外部连接器；浏览器不会直接读取磁盘或持有凭证。" aside={<button className="primary-button" onClick={() => setNotice("请在本机运行：python3 sync/local_indexer.py && python3 sync/knowledge_processor.py && python3 sync/retrieval_bundle.py")}><RefreshCw size={15} /> 手动同步</button>} />
-      {notice && <div className="command-notice"><TerminalSquare size={17} /><code>{notice}</code><button onClick={() => setNotice("")}>关闭</button></div>}
-      <div className="connector-grid">{connectors.map((connector) => { const Icon = connector.icon; return <article className="panel connector-card" key={connector.name}><div className="connector-card__icon"><Icon size={21} /></div><div><h2>{connector.name}</h2><p>{connector.detail}</p></div><StatusBadge tone={connector.tone}>{connector.status}</StatusBadge><small>{connector.meta}</small><button className="icon-button" aria-label={`${connector.name} 详情暂不可用`} title="连接器详情面板待接入" disabled><ChevronRight size={17} /></button></article>; })}</div>
+      <ViewHeading eyebrow="SYNC OPERATIONS / 07" title="同步中心" description="监控本地索引和外部连接器；浏览器不会直接读取磁盘或持有凭证。" aside={<button className="primary-button" onClick={refreshNow} disabled={running}>{running ? <LoaderCircle className="spin" size={15} /> : <RefreshCw size={15} />} {running ? "同步中…" : "手动同步"}</button>} />
+      <div className="connector-grid">{connectors.map((connector) => { const Icon = connector.icon; return <article className="panel connector-card" key={connector.name}><div className="connector-card__icon"><Icon size={21} /></div><div><h2>{connector.name}</h2><p>{connector.detail}</p></div><StatusBadge tone={connector.tone}>{connector.status}</StatusBadge><small>{connector.meta}</small></article>; })}</div>
+      {snapshot && (
+        <section className="panel sync-sources">
+          <div className="panel__header">
+            <div><span className="eyebrow">SOURCE HEALTH</span><h2>数据源明细</h2></div>
+            <span className="sync-sources__hint">共 {SOURCE_KEY_ORDER.length} 个只读数据源</span>
+          </div>
+          <div className="sync-sources-grid">
+            {SOURCE_KEY_ORDER.map((key) => {
+              const state = snapshot.sources[key];
+              const badge = sourceState(state);
+              return (
+                <div className="sync-source-row" key={key}>
+                  <strong>{SOURCE_LABELS[key]}</strong>
+                  <StatusBadge tone={badge.tone}>{badge.label}</StatusBadge>
+                  <span>{state ? `${state.count.toLocaleString("zh-CN")} 条` : "—"}</span>
+                  <time>{formatDateTime(state?.fetchedAt ?? state?.lastSuccessAt ?? null)}</time>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
       <div className="sync-layout">
         <section className="panel sync-run">
           <div className="panel__header"><div><span className="eyebrow">LATEST RUN</span><h2>最近盘点记录</h2></div><StatusBadge><CheckCircle2 size={12} /> 完成</StatusBadge></div>
@@ -267,7 +355,7 @@ export function SyncView({ index }: ViewProps) {
           <div className="run-stats"><div><span>新增</span><strong>+{summary.added}</strong></div><div><span>更新</span><strong>{summary.updated}</strong></div><div><span>跳过</span><strong>{summary.skipped}</strong></div><div><span>删除</span><strong>{summary.deleted}</strong></div><div><span>失败</span><strong className={summary.failed ? "text-amber" : ""}>{summary.failed}</strong></div></div>
           <div className="privacy-strip"><ShieldCheck size={18} /><div><strong>隐私边界已启用</strong><span>前端仅含相对路径与展示元数据；文件指纹只保存在本机私有缓存。</span></div></div>
         </section>
-        <aside className="panel schedule-card"><span className="eyebrow">SCHEDULE</span><Clock3 size={25} /><h2>每日增量更新</h2><strong>08:30</strong><p>Qoder 本地定时任务已启用，按隐私边界更新索引和服务端检索数据包。</p><StatusBadge>已启用</StatusBadge></aside>
+        <aside className="panel schedule-card"><span className="eyebrow">SYNC MODE</span><Clock3 size={25} /><h2>按需手动同步</h2><strong>{schedule.clock}</strong><p>{schedule.note}</p><StatusBadge tone={schedule.tone}>{schedule.label}</StatusBadge></aside>
       </div>
     </div>
   );

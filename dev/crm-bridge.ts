@@ -22,7 +22,25 @@ const MAX_CONCURRENT_INSIGHTS = 2;
 const FINAL_MARKER = "========== 最终结果 ==========";
 const CID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const MESSAGE_ID_PATTERN = /answerMessageId:\s*([A-Za-z0-9_-]{8,128})/;
-const SNAPSHOT_SECTIONS = ["agenda", "todos", "customers", "projects"] as const;
+const ANSWER_ID_PATTERN = /^[A-Za-z0-9_-]{8,128}$/;
+const REPORT_URL_PATTERN = /^https?:\/\/[^\s"'<>\\]{1,480}$/;
+const RESOURCE_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+const RESOURCE_TYPE_PATTERN = /^(report|dataset)$/;
+const FBI_ONESHOT_TIMEOUT_MS = 60_000;
+const MAX_QUESTION_CHARS = 2_000;
+const MAX_WORKSPACE_FILE_CHARS = 120_000;
+const SNAPSHOT_SECTIONS = [
+  "agenda",
+  "todos",
+  "groups",
+  "mentions",
+  "unread",
+  "customers",
+  "projects",
+  "overview",
+  "top",
+  "mygroups",
+] as const;
 
 export interface CommandResult {
   readonly code: number | null;
@@ -57,12 +75,47 @@ export type InsightStartResult =
   | { readonly ok: true; readonly record: InsightRecord; readonly reused: boolean }
   | { readonly ok: false; readonly error: "invalid_cid" | "customer_not_found" | "busy" };
 
+/** A resolved FBI resource, ready to bind to create_chat. */
+export interface FbiResource {
+  readonly resourceId: string;
+  readonly resourceType: string;
+}
+
+export type ResolveReportResult =
+  | { readonly ok: true; readonly resourceId: string; readonly resourceType: string }
+  | { readonly ok: false; readonly error: "invalid_url" | "resolve_failed" };
+
+export type CreateChatResult =
+  | { readonly ok: true; readonly answerMessageId: string }
+  | { readonly ok: false; readonly error: "invalid_question" | "invalid_resource" | "create_failed" };
+
+export type WorkspaceFilesResult =
+  | { readonly ok: true; readonly files: readonly string[] }
+  | { readonly ok: false; readonly error: "invalid_message_id" | "list_failed" };
+
+export type WorkspaceFileContentResult =
+  | { readonly ok: true; readonly content: unknown }
+  | { readonly ok: false; readonly error: "content_failed" | "content_too_large" };
+
+export type WorkspaceFileResult =
+  | WorkspaceFileContentResult
+  | { readonly ok: false; readonly error: "invalid_message_id" | "invalid_file_path" };
+
+export type SessionResult =
+  | { readonly ok: true; readonly sessionId: string; readonly reused: boolean }
+  | { readonly ok: false; readonly error: "session_failed" };
+
 export interface CrmBridge {
   readonly snapshot: () => Promise<unknown | undefined>;
   readonly refreshStatus: () => RefreshStatus;
   readonly startRefresh: () => RefreshStatus;
   readonly insight: (cid: string) => Promise<InsightRecord | undefined>;
   readonly startInsight: (cid: string) => Promise<InsightStartResult>;
+  readonly resolveReport: (url: string) => Promise<ResolveReportResult>;
+  readonly createChat: (question: string, resource?: FbiResource) => Promise<CreateChatResult>;
+  readonly workspaceFiles: (answerMessageId: string) => Promise<WorkspaceFilesResult>;
+  readonly workspaceFile: (answerMessageId: string, filePath: string) => Promise<WorkspaceFileResult>;
+  readonly ensureSession: () => Promise<SessionResult>;
 }
 
 export interface CrmBridgeOptions {
@@ -135,6 +188,73 @@ export function parseFinalAnswer(stdout: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function tryJsonObject(text: string): Record<string, unknown> | undefined {
+  try {
+    const value: unknown = JSON.parse(text);
+    return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** search_report.py prints the parsed resource as JSON (keys: resource_id / resource_type). */
+export function parseReportResource(stdout: string): { resourceId: string; resourceType: string } | undefined {
+  const trimmed = stdout.trim();
+  const first = trimmed.indexOf("{");
+  const last = trimmed.lastIndexOf("}");
+  const record = tryJsonObject(trimmed)
+    ?? (first >= 0 && last > first ? tryJsonObject(trimmed.slice(first, last + 1)) : undefined);
+  const resourceId = typeof record?.resource_id === "string" ? record.resource_id : undefined;
+  const resourceType = typeof record?.resource_type === "string" ? record.resource_type : undefined;
+  return resourceId && resourceType ? { resourceId, resourceType } : undefined;
+}
+
+/** data_mate_session.py ends with "当前会话 ID：<id>" and says whether it reused a session. */
+export function parseSessionInfo(stdout: string): { sessionId: string; reused: boolean } | undefined {
+  const match = /当前会话 ID[：:]\s*([A-Za-z0-9_-]{1,128})/.exec(stdout);
+  if (!match) return undefined;
+  const [, sessionId] = match;
+  if (!sessionId) return undefined;
+  return { sessionId, reused: stdout.includes("使用已有会话 ID") };
+}
+
+/** query_workspace_file.py list mode prints "  1. data/file.csv" numbered lines. */
+export function parseWorkspaceFiles(stdout: string): string[] | undefined {
+  if (!stdout.includes("数据文件列表查询成功")) return undefined;
+  const files: string[] = [];
+  for (const line of stdout.split(/\r?\n/)) {
+    const match = /^\s*\d+\.\s+(\S.*?)\s*$/.exec(line);
+    const path = match?.[1];
+    if (path) files.push(path);
+  }
+  return files;
+}
+
+/** query_workspace_file.py content mode prints a success marker followed by a JSON block. */
+export function parseWorkspaceFileContent(stdout: string): WorkspaceFileContentResult {
+  const marker = "文件内容查询成功";
+  const index = stdout.indexOf(marker);
+  if (index < 0) return { ok: false, error: "content_failed" };
+  const block = stdout.slice(index + marker.length).replace(/^[：:\s]+/, "").trim();
+  if (!block) return { ok: false, error: "content_failed" };
+  if (block.length > MAX_WORKSPACE_FILE_CHARS) return { ok: false, error: "content_too_large" };
+  try {
+    return { ok: true, content: JSON.parse(block) };
+  } catch {
+    return { ok: false, error: "content_failed" };
+  }
+}
+
+function isSafeFilePath(filePath: string): boolean {
+  return filePath.length > 0
+    && filePath.length <= 300
+    && filePath === filePath.trim()
+    && !filePath.startsWith("/")
+    && !filePath.includes("\\")
+    && !/(^|\/)\.\.(\/|$)/.test(filePath)
+    && !/[\u0000-\u001f\u007f]/.test(filePath);
 }
 
 function isFresh(record: InsightRecord, now: number): boolean {
@@ -256,6 +376,79 @@ export function createCrmBridge(options: CrmBridgeOptions = {}): CrmBridge {
       const record = await saveInsight({ ...pending, answerMessageId });
       poll(record);
       return { ok: true, record, reused: false };
+    },
+
+    resolveReport: async (url) => {
+      if (typeof url !== "string" || !REPORT_URL_PATTERN.test(url)) return { ok: false, error: "invalid_url" };
+      const result = await run("python3", [join(FBI_SCRIPTS, "search_report.py"), url], {
+        cwd: WORKSPACE_ROOT,
+        env: fbiEnv,
+        timeoutMs: FBI_ONESHOT_TIMEOUT_MS,
+      }).catch(() => ({ code: null, stdout: "" }));
+      const parsed = result.code === 0 ? parseReportResource(result.stdout) : undefined;
+      if (!parsed || !RESOURCE_ID_PATTERN.test(parsed.resourceId) || !RESOURCE_TYPE_PATTERN.test(parsed.resourceType)) {
+        return { ok: false, error: "resolve_failed" };
+      }
+      return { ok: true, resourceId: parsed.resourceId, resourceType: parsed.resourceType };
+    },
+
+    createChat: async (question, resource) => {
+      const text = typeof question === "string" ? question.trim() : "";
+      if (!text || text.length > MAX_QUESTION_CHARS || /[\u0000-\u001f]/.test(text)) {
+        return { ok: false, error: "invalid_question" };
+      }
+      let binding: string | undefined;
+      if (resource) {
+        if (
+          typeof resource.resourceId !== "string" || !RESOURCE_ID_PATTERN.test(resource.resourceId)
+          || typeof resource.resourceType !== "string" || !RESOURCE_TYPE_PATTERN.test(resource.resourceType)
+        ) {
+          return { ok: false, error: "invalid_resource" };
+        }
+        binding = JSON.stringify({ resourceId: resource.resourceId, resourceType: resource.resourceType });
+      }
+      const script = join(FBI_SCRIPTS, "create_chat.py");
+      const args = binding ? [script, text, binding] : [script, text];
+      const result = await run("python3", args, {
+        cwd: WORKSPACE_ROOT,
+        env: fbiEnv,
+        timeoutMs: FBI_CREATE_TIMEOUT_MS,
+      }).catch(() => ({ code: null, stdout: "" }));
+      const answerMessageId = result.code === 0 ? parseAnswerMessageId(result.stdout) : undefined;
+      return answerMessageId ? { ok: true, answerMessageId } : { ok: false, error: "create_failed" };
+    },
+
+    workspaceFiles: async (answerMessageId) => {
+      if (!ANSWER_ID_PATTERN.test(answerMessageId)) return { ok: false, error: "invalid_message_id" };
+      const result = await run("python3", [join(FBI_SCRIPTS, "query_workspace_file.py"), answerMessageId], {
+        cwd: WORKSPACE_ROOT,
+        env: fbiEnv,
+        timeoutMs: FBI_ONESHOT_TIMEOUT_MS,
+      }).catch(() => ({ code: null, stdout: "" }));
+      const files = result.code === 0 ? parseWorkspaceFiles(result.stdout) : undefined;
+      return files ? { ok: true, files } : { ok: false, error: "list_failed" };
+    },
+
+    workspaceFile: async (answerMessageId, filePath) => {
+      if (!ANSWER_ID_PATTERN.test(answerMessageId)) return { ok: false, error: "invalid_message_id" };
+      if (!isSafeFilePath(filePath)) return { ok: false, error: "invalid_file_path" };
+      const result = await run("python3", [join(FBI_SCRIPTS, "query_workspace_file.py"), answerMessageId, filePath], {
+        cwd: WORKSPACE_ROOT,
+        env: fbiEnv,
+        timeoutMs: FBI_ONESHOT_TIMEOUT_MS,
+      }).catch(() => ({ code: null, stdout: "" }));
+      if (result.code !== 0) return { ok: false, error: "content_failed" };
+      return parseWorkspaceFileContent(result.stdout);
+    },
+
+    ensureSession: async () => {
+      const result = await run("python3", [join(FBI_SCRIPTS, "data_mate_session.py")], {
+        cwd: WORKSPACE_ROOT,
+        env: fbiEnv,
+        timeoutMs: FBI_ONESHOT_TIMEOUT_MS,
+      }).catch(() => ({ code: null, stdout: "" }));
+      const info = result.code === 0 ? parseSessionInfo(result.stdout) : undefined;
+      return info ? { ok: true, sessionId: info.sessionId, reused: info.reused } : { ok: false, error: "session_failed" };
     },
   };
 }

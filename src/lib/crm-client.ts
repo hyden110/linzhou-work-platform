@@ -55,6 +55,19 @@ function isSnapshot(value: unknown): value is CrmSnapshot {
   return ["agenda", "todos", "customers", "projects"].every((key) => Array.isArray(value[key]));
 }
 
+/** Older schema-1 snapshots predate the dingtalk/overview sections; fill them so the UI can rely on arrays. */
+function normalizeSnapshot(value: CrmSnapshot): CrmSnapshot {
+  return {
+    ...value,
+    groups: value.groups ?? [],
+    mentions: value.mentions ?? [],
+    unread: value.unread ?? [],
+    overview: value.overview ?? [],
+    top: value.top ?? [],
+    mygroups: value.mygroups ?? [],
+  };
+}
+
 function isRefreshStatus(value: unknown): value is RefreshStatus {
   return isRecord(value) && ["idle", "running", "succeeded", "failed"].includes(String(value.state));
 }
@@ -66,7 +79,7 @@ function isInsight(value: unknown): value is InsightRecord {
 export async function fetchCrmSnapshot(fetchImpl: typeof fetch = fetch): Promise<{ snapshot: CrmSnapshot; refresh: RefreshStatus | null }> {
   const payload = await request("/local/crm/snapshot", { method: "GET" }, fetchImpl);
   if (!isSnapshot(payload.data)) throw new CrmClientError("invalid_response");
-  return { snapshot: payload.data, refresh: isRefreshStatus(payload.refresh) ? payload.refresh : null };
+  return { snapshot: normalizeSnapshot(payload.data), refresh: isRefreshStatus(payload.refresh) ? payload.refresh : null };
 }
 
 export async function fetchRefreshStatus(fetchImpl: typeof fetch = fetch): Promise<RefreshStatus> {

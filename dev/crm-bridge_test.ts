@@ -8,11 +8,16 @@ import {
   createCrmBridge,
   parseAnswerMessageId,
   parseFinalAnswer,
+  parseReportResource,
+  parseSessionInfo,
+  parseWorkspaceFileContent,
+  parseWorkspaceFiles,
   type CommandRunner,
 } from "./crm-bridge.ts";
 import { createLocalRouter } from "./local-router.ts";
 
 const MESSAGE_ID = "fb7bb646ab474ef0a2870715d19aab3f";
+const REPORT_URL = "https://fbi.example.com/fbi/report/53694/view.htm";
 
 interface Call {
   readonly file: string;
@@ -75,6 +80,24 @@ test("snapshot keeps only known sections", async () => {
     assert.equal(snapshot.secretToken, undefined);
     assert.deepEqual(snapshot.projects, []);
     assert.equal((snapshot.customers as unknown[]).length, 1);
+  });
+});
+
+test("snapshot passes the dingtalk sections through and drops unknown keys", async () => {
+  await withCache(async (dir) => {
+    await writeSnapshot(dir, {
+      groups: [{ id: "cidA==", name: "示例群", type: "NORMAL_GROUP", memberCount: 3 }],
+      mentions: [{ id: "msgX==", conversationId: "cidA==", conversationName: "示例群", sender: "甲", text: "@你", time: "2026-10-15 09:44:29" }],
+      unread: [{ id: "cidB==", name: "未读群" }],
+      evilExtra: [1, 2],
+    });
+    const bridge = createCrmBridge({ cacheDir: dir, run: recordingRunner({}).runner });
+    const snapshot = await bridge.snapshot() as Record<string, unknown>;
+    assert.equal((snapshot.groups as unknown[]).length, 1);
+    assert.equal((snapshot.mentions as unknown[]).length, 1);
+    assert.equal((snapshot.unread as unknown[]).length, 1);
+    assert.equal(snapshot.evilExtra, undefined);
+    assert.equal(snapshot.secretToken, undefined);
   });
 });
 
@@ -151,6 +174,161 @@ test("failed creation is recorded and can be retried", async () => {
     assert.equal(first.record.error, "fbi_create_failed");
     await bridge.startInsight("C123");
     assert.equal(calls.length, 2);
+  });
+});
+
+test("parses FBI client script outputs", () => {
+  assert.deepEqual(
+    parseReportResource(JSON.stringify({ resource_id: "53694", resource_type: "report", source_url: REPORT_URL }, null, 2)),
+    { resourceId: "53694", resourceType: "report" },
+  );
+  assert.deepEqual(
+    parseReportResource(`提示行\n{"resource_id": "71959005", "resource_type": "dataset"}\n结尾行`),
+    { resourceId: "71959005", resourceType: "dataset" },
+  );
+  assert.equal(parseReportResource('{"resource_id":"12"}'), undefined);
+  assert.equal(parseReportResource("traceback"), undefined);
+
+  assert.deepEqual(
+    parseWorkspaceFiles("✅ 数据文件列表查询成功：\n  1. data/agents.csv\n  2. data/maas income.json\n"),
+    ["data/agents.csv", "data/maas income.json"],
+  );
+  assert.deepEqual(parseWorkspaceFiles("✅ 数据文件列表查询成功：\n  （无数据文件）\n"), []);
+  assert.equal(parseWorkspaceFiles("❌ 查询失败"), undefined);
+
+  assert.deepEqual(
+    parseWorkspaceFileContent(`✅ 文件内容查询成功：\n${JSON.stringify({ path: "data/agents.csv" }, null, 2)}\n`),
+    { ok: true, content: { path: "data/agents.csv" } },
+  );
+  assert.deepEqual(parseWorkspaceFileContent("没有输出标记"), { ok: false, error: "content_failed" });
+
+  assert.deepEqual(
+    parseSessionInfo("使用已有会话 ID：sess-1（创建于 2026-10-14，已刷新最近使用时间）\n当前会话 ID：sess-1"),
+    { sessionId: "sess-1", reused: true },
+  );
+  assert.deepEqual(parseSessionInfo("新会话已创建并保存：sess_2\n当前会话 ID：sess_2"), { sessionId: "sess_2", reused: false });
+  assert.equal(parseSessionInfo("暂时没有输出"), undefined);
+});
+
+test("resolveReport turns a report url into a bound resource", async () => {
+  await withCache(async (dir) => {
+    const { calls, runner } = recordingRunner({
+      "search_report.py": { code: 0, stdout: JSON.stringify({ resource_id: "53694", resource_type: "report", source_url: REPORT_URL }, null, 2) },
+    });
+    const bridge = createCrmBridge({ cacheDir: dir, run: runner });
+
+    assert.deepEqual(await bridge.resolveReport(REPORT_URL), { ok: true, resourceId: "53694", resourceType: "report" });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]!.args[0]!.split("/").pop(), "search_report.py");
+    assert.equal(calls[0]!.args[1], REPORT_URL);
+    assert.equal(calls[0]!.pwd, calls[0]!.cwd);
+
+    assert.deepEqual(await bridge.resolveReport("javascript:alert(1)"), { ok: false, error: "invalid_url" });
+    assert.deepEqual(await bridge.resolveReport(`https://fbi.example.com/${"a".repeat(600)}`), { ok: false, error: "invalid_url" });
+    assert.equal(calls.length, 1);
+
+    const failing = createCrmBridge({ cacheDir: dir, run: recordingRunner({ "search_report.py": { code: 1, stdout: "traceback token=secret" } }).runner });
+    assert.deepEqual(await failing.resolveReport(REPORT_URL), { ok: false, error: "resolve_failed" });
+
+    const incomplete = createCrmBridge({ cacheDir: dir, run: recordingRunner({ "search_report.py": { code: 0, stdout: '{"resource_id": "53694"}' } }).runner });
+    assert.deepEqual(await incomplete.resolveReport(REPORT_URL), { ok: false, error: "resolve_failed" });
+
+    const unsafe = createCrmBridge({ cacheDir: dir, run: recordingRunner({ "search_report.py": { code: 0, stdout: '{"resource_id": "../../etc", "resource_type": "report"}' } }).runner });
+    assert.deepEqual(await unsafe.resolveReport(REPORT_URL), { ok: false, error: "resolve_failed" });
+  });
+});
+
+test("createChat binds a resolved resource and parses the answer id", async () => {
+  await withCache(async (dir) => {
+    const { calls, runner } = recordingRunner({
+      "create_chat.py": { code: 0, stdout: `提交成功！\nanswerMessageId: ${MESSAGE_ID}\nquestionMessageId: q1` },
+    });
+    const bridge = createCrmBridge({ cacheDir: dir, run: runner });
+
+    const created = await bridge.createChat("统计客户维度 Agent 数量", { resourceId: "53694", resourceType: "report" });
+    assert.deepEqual(created, { ok: true, answerMessageId: MESSAGE_ID });
+    assert.equal(calls[0]!.args[0]!.split("/").pop(), "create_chat.py");
+    assert.equal(calls[0]!.args[1], "统计客户维度 Agent 数量");
+    assert.deepEqual(JSON.parse(calls[0]!.args[2]!), { resourceId: "53694", resourceType: "report" });
+    assert.equal(calls[0]!.pwd, calls[0]!.cwd);
+
+    await bridge.createChat("无资源绑定的问题");
+    assert.equal(calls[1]!.args.length, 2);
+
+    assert.deepEqual(await bridge.createChat("   "), { ok: false, error: "invalid_question" });
+    assert.deepEqual(await bridge.createChat("问题", { resourceId: "../etc", resourceType: "report" }), { ok: false, error: "invalid_resource" });
+    assert.deepEqual(await bridge.createChat("问题", { resourceId: "53694", resourceType: "dashboard" }), { ok: false, error: "invalid_resource" });
+    assert.equal(calls.length, 2);
+
+    const failing = createCrmBridge({ cacheDir: dir, run: recordingRunner({ "create_chat.py": { code: 1, stdout: "鉴权失败" } }).runner });
+    assert.deepEqual(await failing.createChat("问题"), { ok: false, error: "create_failed" });
+  });
+});
+
+test("workspaceFiles lists the data files of an answer", async () => {
+  await withCache(async (dir) => {
+    const { calls, runner } = recordingRunner({
+      "query_workspace_file.py": { code: 0, stdout: "✅ 数据文件列表查询成功：\n  1. data/fbi_agents.csv\n  2. data/maas_income.json\n" },
+    });
+    const bridge = createCrmBridge({ cacheDir: dir, run: runner });
+
+    assert.deepEqual(await bridge.workspaceFiles(MESSAGE_ID), { ok: true, files: ["data/fbi_agents.csv", "data/maas_income.json"] });
+    assert.deepEqual(calls[0]!.args.slice(1), [MESSAGE_ID]);
+    assert.deepEqual(await bridge.workspaceFiles("short"), { ok: false, error: "invalid_message_id" });
+    assert.equal(calls.length, 1);
+
+    const empty = createCrmBridge({ cacheDir: dir, run: recordingRunner({ "query_workspace_file.py": { code: 0, stdout: "✅ 数据文件列表查询成功：\n  （无数据文件）\n" } }).runner });
+    assert.deepEqual(await empty.workspaceFiles(MESSAGE_ID), { ok: true, files: [] });
+
+    const failing = createCrmBridge({ cacheDir: dir, run: recordingRunner({ "query_workspace_file.py": { code: 1, stdout: "❌ 查询失败" } }).runner });
+    assert.deepEqual(await failing.workspaceFiles(MESSAGE_ID), { ok: false, error: "list_failed" });
+  });
+});
+
+test("workspaceFile reads content and guards the file path", async () => {
+  await withCache(async (dir) => {
+    const payload = { path: "data/fbi_agents.csv", content: "date,agents\n2026-10-14,12" };
+    const { calls, runner } = recordingRunner({
+      "query_workspace_file.py": { code: 0, stdout: `✅ 文件内容查询成功：\n${JSON.stringify(payload, null, 2)}\n` },
+    });
+    const bridge = createCrmBridge({ cacheDir: dir, run: runner });
+
+    assert.deepEqual(await bridge.workspaceFile(MESSAGE_ID, "data/fbi_agents.csv"), { ok: true, content: payload });
+    assert.deepEqual(calls[0]!.args.slice(1), [MESSAGE_ID, "data/fbi_agents.csv"]);
+    assert.deepEqual(await bridge.workspaceFile("short", "data/a.csv"), { ok: false, error: "invalid_message_id" });
+    assert.deepEqual(await bridge.workspaceFile(MESSAGE_ID, "../secrets"), { ok: false, error: "invalid_file_path" });
+    assert.deepEqual(await bridge.workspaceFile(MESSAGE_ID, "/etc/passwd"), { ok: false, error: "invalid_file_path" });
+    assert.deepEqual(await bridge.workspaceFile(MESSAGE_ID, "data\\win.csv"), { ok: false, error: "invalid_file_path" });
+    assert.equal(calls.length, 1);
+
+    const failing = createCrmBridge({ cacheDir: dir, run: recordingRunner({ "query_workspace_file.py": { code: 1, stdout: "❌ 查询失败" } }).runner });
+    assert.deepEqual(await failing.workspaceFile(MESSAGE_ID, "data/a.csv"), { ok: false, error: "content_failed" });
+
+    const junk = createCrmBridge({ cacheDir: dir, run: recordingRunner({ "query_workspace_file.py": { code: 0, stdout: "意外输出" } }).runner });
+    assert.deepEqual(await junk.workspaceFile(MESSAGE_ID, "data/a.csv"), { ok: false, error: "content_failed" });
+
+    const huge = createCrmBridge({ cacheDir: dir, run: recordingRunner({ "query_workspace_file.py": { code: 0, stdout: `✅ 文件内容查询成功：\n"${"x".repeat(150_000)}"` } }).runner });
+    assert.deepEqual(await huge.workspaceFile(MESSAGE_ID, "data/big.csv"), { ok: false, error: "content_too_large" });
+  });
+});
+
+test("ensureSession reports reused and freshly created data mate sessions", async () => {
+  await withCache(async (dir) => {
+    const { calls, runner } = recordingRunner({
+      "data_mate_session.py": { code: 0, stdout: "使用已有会话 ID：sess-1（创建于 2026-10-14，已刷新最近使用时间）\n当前会话 ID：sess-1\n" },
+    });
+    const bridge = createCrmBridge({ cacheDir: dir, run: runner });
+
+    assert.deepEqual(await bridge.ensureSession(), { ok: true, sessionId: "sess-1", reused: true });
+    assert.equal(calls[0]!.args.length, 1);
+    assert.equal(calls[0]!.args[0]!.split("/").pop(), "data_mate_session.py");
+    assert.equal(calls[0]!.pwd, calls[0]!.cwd);
+
+    const fresh = createCrmBridge({ cacheDir: dir, run: recordingRunner({ "data_mate_session.py": { code: 0, stdout: "未找到已有会话，正在创建新会话...\n新会话已创建并保存：sess-2\n当前会话 ID：sess-2\n" } }).runner });
+    assert.deepEqual(await fresh.ensureSession(), { ok: true, sessionId: "sess-2", reused: false });
+
+    const failing = createCrmBridge({ cacheDir: dir, run: recordingRunner({ "data_mate_session.py": { code: 1, stdout: "" } }).runner });
+    assert.deepEqual(await failing.ensureSession(), { ok: false, error: "session_failed" });
   });
 });
 

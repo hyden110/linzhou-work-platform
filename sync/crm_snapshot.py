@@ -29,16 +29,23 @@ CUSTOMER_PAGE_SIZE = 200
 CUSTOMER_MAX_PAGES = 10
 PROJECT_PAGE_SIZE = 100
 PROJECT_MAX_PAGES = 5
+TOP_LIMIT = 10
 
 DWS_COMMANDS: Mapping[str, tuple[str, ...]] = {
     "agenda": ("calendar", "+week"),
     "todos": ("todo", "+get-related-tasks"),
+    "groups": ("chat", "+my-groups", "--page-all", "--page-limit", "20"),
+    "mentions": ("chat", "+at-me", "--days", "14", "--page-all", "--page-limit", "10",
+                 "--max-items", "300", "--no-reactions"),
+    "unread": ("chat", "+unread-chats"),
 }
-KUNPENG_SUBCOMMANDS = frozenset({"customers", "projects"})
+KUNPENG_SUBCOMMANDS = frozenset({"customers", "projects", "overview", "top", "mygroups"})
 KUNPENG_SKILL_DIR = Path.home() / ".qwenworkcn" / "skills" / "kunpeng-ecid-mcp"
 KUNPENG_UV = Path.home() / ".local" / "bin" / "uv"
 PROJECT_CATES = {1: "公有云", 2: "混合云", 5: "国际"}
-SECTIONS = ("agenda", "todos", "customers", "projects")
+MENTION_TEXT_LIMIT = 140
+SECTIONS = ("agenda", "todos", "groups", "mentions", "unread",
+            "customers", "projects", "overview", "top", "mygroups")
 
 
 class SourceError(RuntimeError):
@@ -51,17 +58,24 @@ class SourceError(RuntimeError):
 
 
 CommandRunner = Callable[[tuple[str, ...]], Mapping[str, Any]]
+# ``mygroups`` answers with a top-level JSON array, so the 鲲鹏 runner may return any JSON value
+# and every fetch validates the shape it needs.
+KunpengRunner = Callable[[tuple[str, ...]], Any]
 
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-def _parse_json(stdout: str) -> Mapping[str, Any]:
+def _json_any(stdout: str) -> Any:
     try:
-        payload = json.loads(stdout)
+        return json.loads(stdout)
     except json.JSONDecodeError as error:
         raise SourceError("error", "invalid_json") from error
+
+
+def _parse_json(stdout: str) -> Mapping[str, Any]:
+    payload = _json_any(stdout)
     if not isinstance(payload, Mapping):
         raise SourceError("error", "invalid_json")
     return payload
@@ -101,10 +115,19 @@ def run_dws(arguments: Sequence[str]) -> Mapping[str, Any]:
     )
     if completed.returncode == 0:
         return _parse_json(completed.stdout)
+    # Some chat subcommands exit non-zero while still printing a usable payload:
+    # `chat +my-groups` reports pagination gaps as exit 1 with complete:false.
+    # A payload carrying an error envelope still takes the failure path.
+    try:
+        payload = _parse_json(completed.stdout)
+    except SourceError:
+        payload = None
+    if payload is not None and not isinstance(payload.get("error"), Mapping):
+        return payload
     raise SourceError("error", _dws_error_code(completed.stdout, completed.stderr) or f"dws_exit_{completed.returncode}")
 
 
-def run_kunpeng(arguments: Sequence[str]) -> Mapping[str, Any]:
+def run_kunpeng(arguments: Sequence[str]) -> Any:
     command = tuple(arguments)
     if not command or command[0] not in KUNPENG_SUBCOMMANDS:
         raise SourceError("error", "command_not_allowed")
@@ -121,7 +144,7 @@ def run_kunpeng(arguments: Sequence[str]) -> Mapping[str, Any]:
         raise SourceError("auth_required", "kunpeng_login_required")
     if completed.returncode != 0:
         raise SourceError("error", f"kunpeng_exit_{completed.returncode}")
-    return _parse_json(completed.stdout)
+    return _json_any(completed.stdout)
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +257,55 @@ def fetch_todos(dws: CommandRunner) -> SectionResult:
     return SectionResult(items)
 
 
+def fetch_groups(dws: CommandRunner) -> SectionResult:
+    """钉钉群列表；分页无法证明完整时 dws 以 exit 1 + ``complete:false`` 返回全部已抓到的群。
+
+    Such a run must surface as ``partial`` so the UI marks the group↔customer
+    matching as based on an incomplete list.
+    """
+    payload = dws(DWS_COMMANDS["groups"])
+    items = [
+        {"id": _text(group.get("conversationId")),
+         "name": _text(group.get("name")) or "（未命名群）",
+         "type": _text(group.get("type")),
+         "memberCount": int(_number(group.get("memberCount")) or 0)}
+        for group in _mappings(_list(payload, "groups"))
+    ]
+    return SectionResult(items, payload.get("complete") is not False)
+
+
+def fetch_mentions(dws: CommandRunner) -> SectionResult:
+    """@我 的消息。只保留定位与展示所需字段，正文截断到 ``MENTION_TEXT_LIMIT``。"""
+    payload = dws(DWS_COMMANDS["mentions"])
+    items: list[dict[str, Any]] = []
+    for mention in _mappings(_list(payload, "items")):
+        message_id = _text(mention.get("messageId"))
+        if not message_id:
+            continue
+        conversation = mention.get("conversation") if isinstance(mention.get("conversation"), Mapping) else {}
+        items.append({
+            "id": message_id,
+            "conversationId": _text(mention.get("conversationId")),
+            "conversationName": _text(conversation.get("name")),
+            "sender": _text(mention.get("sender")),
+            "text": _text(mention.get("text"), MENTION_TEXT_LIMIT) or "",
+            "time": _text(mention.get("time")),
+        })
+    complete = payload.get("complete") is not False and payload.get("truncated") is not True
+    return SectionResult(items, complete)
+
+
+def fetch_unread(dws: CommandRunner) -> SectionResult:
+    """未读会话。``+unread-chats`` 只返回 id 与名称，两者都保留（名称是展示所必需的）。"""
+    payload = dws(DWS_COMMANDS["unread"])
+    items = [
+        {"id": _text(conversation.get("conversationId")),
+         "name": _text(conversation.get("name"))}
+        for conversation in _mappings(_list(payload, "conversations"))
+    ]
+    return SectionResult([item for item in items if item["id"]])
+
+
 def _project_customer(row: Mapping[str, Any]) -> dict[str, Any] | None:
     cid = _text(row.get("cid"))
     if not cid:
@@ -286,11 +358,13 @@ def _project_row(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _paged_rows(kunpeng: CommandRunner, base: tuple[str, ...], size: int, max_pages: int) -> tuple[list[Mapping[str, Any]], bool, Any]:
+def _paged_rows(kunpeng: KunpengRunner, base: tuple[str, ...], size: int, max_pages: int) -> tuple[list[Mapping[str, Any]], bool, Any]:
     rows: list[Mapping[str, Any]] = []
     total: Any = None
     for page in range(1, max_pages + 1):
         payload = kunpeng((*base, "--size", str(size), "--page", str(page)))
+        if not isinstance(payload, Mapping):
+            raise SourceError("error", "unexpected_shape")
         if payload.get("success") is False:
             raise SourceError("error", "kunpeng_not_success")
         batch = _mappings(_list(payload, "rows"))
@@ -302,15 +376,91 @@ def _paged_rows(kunpeng: CommandRunner, base: tuple[str, ...], size: int, max_pa
     return rows, False, total
 
 
-def fetch_customers(kunpeng: CommandRunner) -> SectionResult:
+def fetch_customers(kunpeng: KunpengRunner) -> SectionResult:
     rows, complete, total = _paged_rows(kunpeng, ("customers",), CUSTOMER_PAGE_SIZE, CUSTOMER_MAX_PAGES)
     items = [item for item in (_project_customer(row) for row in rows) if item]
     return SectionResult(items, complete, {"total": total})
 
 
-def fetch_projects(kunpeng: CommandRunner) -> SectionResult:
+def fetch_projects(kunpeng: KunpengRunner) -> SectionResult:
     rows, complete, total = _paged_rows(kunpeng, ("projects", "--state", "normal"), PROJECT_PAGE_SIZE, PROJECT_MAX_PAGES)
     return SectionResult([_project_row(row) for row in rows], complete, {"total": total})
+
+
+def fetch_overview(kunpeng: KunpengRunner) -> SectionResult:
+    """鲲鹏「我的客户」总览指标（支付口径在 metric.category 中标注）。
+
+    The endpoint returns a metric catalog plus ``values``; each value carries the real
+    number in ``data`` (the ``value`` field mirrors the metric id). Metrics without a
+    ``data`` value (e.g. 混合云环比 when there is no baseline) are skipped instead of
+    surfacing a misleading number.
+    """
+    payload = kunpeng(("overview",))
+    if not isinstance(payload, Mapping):
+        raise SourceError("error", "unexpected_shape")
+    items: list[dict[str, Any]] = []
+    for metric in _mappings(payload.get("values") or []):
+        value = _number(metric.get("data"))
+        label = _text(metric.get("label"))
+        if value is None or label is None:
+            continue
+        items.append({
+            "id": _text(metric.get("id")),
+            "label": label,
+            "value": value,
+            "unit": _text(metric.get("unitName")),
+            "category": _text(metric.get("categoryCodeName")),
+        })
+    return SectionResult(items)
+
+
+def fetch_top(kunpeng: KunpengRunner) -> SectionResult:
+    """客户 TOP 榜；``checks`` 是鲲鹏自带的顺序/条数自检，必须原样带到前端告警。"""
+    payload = kunpeng(("top", "--limit", str(TOP_LIMIT), "--metric", "last_month_gaap"))
+    if not isinstance(payload, Mapping):
+        raise SourceError("error", "unexpected_shape")
+    checks_raw = payload.get("checks") if isinstance(payload.get("checks"), Mapping) else {}
+    checks = {
+        "gaapMonotonicDesc": checks_raw.get("gaapMonotonicDesc") is True,
+        "countWithinLimit": checks_raw.get("countWithinLimit") is True,
+    }
+    items = [
+        {
+            "rank": int(_number(row.get("rank")) or 0),
+            "cid": _text(row.get("cid")),
+            "name": _text(row.get("name")) or _text(row.get("cid")) or "（未命名客户）",
+            "industry": _text(row.get("industry")),
+            "area": _text(row.get("area")),
+            "level": _text(row.get("gcLevel")),
+            "lastMonthGaap": _number(row.get("lastMonthGaap")),
+            "yesterdayGaap": _number(row.get("yesterdayGaap")),
+        }
+        for row in _mappings(_list(payload, "items"))
+    ]
+    return SectionResult(items, True, {
+        "total": payload.get("total"),
+        "metric": _text(payload.get("metric")),
+        "orderBy": _text(payload.get("orderBy")),
+        "queriedAt": _text(payload.get("queriedAt")),
+        "checks": checks,
+    })
+
+
+def fetch_mygroups(kunpeng: KunpengRunner) -> SectionResult:
+    """「我的客户」分组视图及各自 cidCount；分层卡片只用这里的计数（--view-id 行过滤当前不生效）。"""
+    payload = kunpeng(("mygroups",))
+    if not isinstance(payload, list):
+        raise SourceError("error", "unexpected_shape")
+    items: list[dict[str, Any]] = []
+    for group in _mappings(payload):
+        for view in _mappings(group.get("views") or []):
+            items.append({
+                "id": _text(view.get("id")),
+                "name": _text(view.get("name")) or _text(view.get("id")) or "（未命名视图）",
+                "group": _text(group.get("name")),
+                "count": int(_number(view.get("cidCount")) or 0),
+            })
+    return SectionResult(items)
 
 
 # ---------------------------------------------------------------------------
@@ -355,7 +505,7 @@ def build_snapshot(
     *,
     output_path: Path,
     dws: CommandRunner = run_dws,
-    kunpeng: CommandRunner = run_kunpeng,
+    kunpeng: KunpengRunner = run_kunpeng,
     now: Callable[[], str] = _utc_now,
 ) -> dict[str, Any]:
     previous = _load_previous(output_path)
@@ -363,8 +513,14 @@ def build_snapshot(
     fetchers: Mapping[str, Callable[[], SectionResult]] = {
         "agenda": lambda: fetch_agenda(dws),
         "todos": lambda: fetch_todos(dws),
+        "groups": lambda: fetch_groups(dws),
+        "mentions": lambda: fetch_mentions(dws),
+        "unread": lambda: fetch_unread(dws),
         "customers": lambda: fetch_customers(kunpeng),
         "projects": lambda: fetch_projects(kunpeng),
+        "overview": lambda: fetch_overview(kunpeng),
+        "top": lambda: fetch_top(kunpeng),
+        "mygroups": lambda: fetch_mygroups(kunpeng),
     }
     results = {name: _section(name, fetchers[name], previous, timestamp) for name in SECTIONS}
     snapshot = {

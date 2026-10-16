@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { CalendarClock, CircleAlert, ListTodo, Users } from "lucide-react";
+import { AtSign, Bot, CalendarClock, CircleAlert, CircleDollarSign, ListTodo, Users } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { actionQueue, parseLocalTime, startOfDay, type ActionItem, type Urgency } from "../../lib/crm-model";
 import { StatusBadge, ViewHeading } from "../shared";
@@ -19,6 +19,7 @@ const URGENCY: Record<Urgency, { label: string; tone: "amber" | "green" | "blue"
 const KIND_ICON: Record<ActionItem["kind"], LucideIcon> = {
   todo: ListTodo,
   meeting: CalendarClock,
+  mention: AtSign,
 };
 
 function useNow(intervalMs = 60_000): number {
@@ -88,11 +89,13 @@ export function CockpitView() {
       <CrmGate>
         {snapshot && model && (
           <>
-            <SourceBanner keys={["agenda", "todos", "customers"]} />
-            <section className="metric-grid crm-metrics" aria-label="今日概况">
+            <SourceBanner keys={["agenda", "todos", "mentions", "customers"]} />
+            <section className="metric-grid crm-metrics crm-metrics--five" aria-label="关键指标">
               <Metric icon={CalendarClock} label="今日日程" value={String(model.todayAgenda.length)} note={`剩余 ${model.todayAgenda.filter((row) => (row.end ?? row.start ?? 0) >= now).length} 场`} primary />
               <Metric icon={CircleAlert} label="逾期待办" value={String(model.overdue)} note={`共 ${snapshot.todos.length} 条未完成`} />
               <Metric icon={Users} label="客户 / 上月 GAAP" value={customersReady ? String(snapshot.customers.length) : "—"} note={customersReady ? `GAAP ${formatGaap(model.gaap)}` : "等待鲲鹏登录"} />
+              <Metric icon={Bot} label="客户维度 Agent 数量" value="—" note="待接入 · 需提供 FBI 报表 URL / report_id" />
+              <Metric icon={CircleDollarSign} label="MaaS 归因收入" value="—" note="待接入 · 需提供 FBI 报表 URL / report_id" />
             </section>
 
             <div className="crm-cockpit">
@@ -102,7 +105,7 @@ export function CockpitView() {
                   <span>{model.queue.length} 项</span>
                 </header>
                 {model.queue.length === 0
-                  ? <p className="crm-muted">近 3 天没有需要处理的事项。</p>
+                  ? <p className="crm-muted">暂无需要处理的待办、会议或 @。</p>
                   : (
                     <>
                       <ul className="crm-list">{visibleQueue.map((item) => <ActionRow key={item.id} item={item} />)}</ul>
