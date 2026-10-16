@@ -6,6 +6,7 @@ import {
   Database,
   Gauge,
   LayoutDashboard,
+  Megaphone,
   MessagesSquare,
   Network,
   PanelLeftClose,
@@ -50,6 +51,12 @@ const navigation: NavigationGroup[] = [
       { id: "documents", label: "全部资料", icon: BookOpenText },
       { id: "yunqi", label: "云栖大会", icon: Cloud },
       { id: "sync", label: "同步中心", icon: RefreshCw },
+    ],
+  },
+  {
+    eyebrow: "GROWTH OPS",
+    items: [
+      { id: "ops", label: "运营推广", icon: Megaphone },
     ],
   },
 ];

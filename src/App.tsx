@@ -9,6 +9,8 @@ import { DingtalkView } from "./components/crm/DingtalkView";
 import { LifecycleView } from "./components/crm/LifecycleView";
 import { KnowledgeMapView } from "./components/KnowledgeMapView";
 import { Sidebar } from "./components/Sidebar";
+import { OpsProvider } from "./components/ops/OpsProvider";
+import { OpsView } from "./components/ops/OpsView";
 import { AskView, DocumentsView, OverviewView, SyncView } from "./components/WorkbenchViews";
 import { YunqiView } from "./components/YunqiView";
 import type { DocumentFacets } from "./components/FacetFilter";
@@ -37,6 +39,7 @@ const viewTitles: Record<ViewId, string> = {
   documents: "全部资料",
   yunqi: "云栖大会",
   sync: "同步中心",
+  ops: "运营推广",
 };
 
 const EMPTY_DOCUMENTS: KnowledgeDocument[] = [];
@@ -196,6 +199,7 @@ function Workbench() {
     documents: <DocumentsView {...commonProps} facets={facets} />,
     yunqi: <YunqiView {...commonProps} />,
     sync: <SyncView {...commonProps} />,
+    ops: <OpsView />,
   }[activeView];
 
   return (
@@ -266,7 +270,9 @@ export default function App() {
   return (
     <LocalRuntimeProvider>
       <CrmProvider>
-        <Workbench />
+        <OpsProvider>
+          <Workbench />
+        </OpsProvider>
       </CrmProvider>
     </LocalRuntimeProvider>
   );

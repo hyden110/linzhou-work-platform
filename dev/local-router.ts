@@ -16,6 +16,7 @@ import {
 } from "./solution-assistant.ts";
 import { createSolutionStore, type SolutionStore } from "./solution-store.ts";
 import { createCrmBridge, type CrmBridge, type InsightRecord } from "./crm-bridge.ts";
+import { createOpsBridge, type OpsBridge } from "./ops-bridge.ts";
 
 /**
  * Router for the local-only endpoints that back the workbench's "open on this Mac",
@@ -113,6 +114,7 @@ export interface LocalRouterDependencies {
   readonly solutionStore?: SolutionStore;
   readonly solutionsDir?: string;
   readonly crmBridge?: CrmBridge;
+  readonly opsBridge?: OpsBridge;
 }
 
 function publicInsight(record: InsightRecord) {
@@ -128,6 +130,7 @@ export function createLocalRouter(dependencies: LocalRouterDependencies) {
   const solutionStore = dependencies.solutionStore
     ?? createSolutionStore(dependencies.solutionsDir ?? SOLUTIONS_PATH);
   const crmBridge = dependencies.crmBridge ?? createCrmBridge();
+  const opsBridge = dependencies.opsBridge ?? createOpsBridge();
   const allowedOrigins = new Set(dependencies.allowedOrigins ?? DEFAULT_ALLOWED_ORIGINS);
   const allowedHosts = new Set([
     `127.0.0.1:${dependencies.port}`,
@@ -192,6 +195,37 @@ export function createLocalRouter(dependencies: LocalRouterDependencies) {
         return jsonResponse({ ok: false, error: result.error }, status, status === 429 ? { "Retry-After": "60" } : {});
       }
       return jsonResponse({ ok: true, data: publicInsight(result.record), reused: result.reused }, result.reused ? 200 : 202);
+    }
+
+    if (route === "/local/ops/digest" && request.method === "GET") {
+      const digest = await opsBridge.digest();
+      return digest
+        ? jsonResponse({ ok: true, data: digest, refresh: opsBridge.refreshStatus() })
+        : jsonResponse({ ok: false, error: "digest_unavailable", refresh: opsBridge.refreshStatus() }, 404);
+    }
+
+    if (route === "/local/ops/refresh" && (request.method === "GET" || request.method === "POST")) {
+      const status = request.method === "POST" ? opsBridge.startRefresh() : opsBridge.refreshStatus();
+      return jsonResponse({ ok: true, data: status }, request.method === "POST" ? 202 : 200);
+    }
+
+    if (route === "/local/ops/card" && request.method === "GET") {
+      const card = await opsBridge.card();
+      return card
+        ? jsonResponse({ ok: true, data: card })
+        : jsonResponse({ ok: false, error: "digest_unavailable" }, 404);
+    }
+
+    if (route === "/local/ops/wechat-links" && request.method === "GET") {
+      return jsonResponse({ ok: true, data: { links: await opsBridge.wechatLinks() } });
+    }
+
+    if (route === "/local/ops/wechat-links" && request.method === "POST") {
+      const body = await readJsonBody(request);
+      const url = typeof body?.url === "string" ? body.url : "";
+      const result = await opsBridge.registerWechatLink(url);
+      if (!result.ok) return jsonResponse({ ok: false, error: "invalid_url" }, 400);
+      return jsonResponse({ ok: true, data: result.link }, 201);
     }
 
     if (route === "/local/preview" && request.method === "GET") {

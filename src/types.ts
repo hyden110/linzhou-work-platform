@@ -9,7 +9,8 @@ export type ViewId =
   | "assistant"
   | "documents"
   | "yunqi"
-  | "sync";
+  | "sync"
+  | "ops";
 
 export interface CountRow {
   name: string;
