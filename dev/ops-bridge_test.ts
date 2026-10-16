@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -280,6 +280,95 @@ test("wechat fetch stops at the five-hop redirect cap", async () => {
     assert.equal(result.link.status, "fetch_failed");
     assert.match(result.link.note, /跳上限/);
     assert.equal(hops, 6); // 首发 1 次 + 最多跟随 5 跳
+  });
+});
+
+test("push card dry-run persists a preview and never calls dws", async () => {
+  await withCache(async (dir) => {
+    await writeOpsDigest(dir, [
+      item({ id: "blog:today", sourceType: "blog", title: "今日博客", url: "https://qoder.com/zh/blog/a" }),
+      item({ id: "changelog:today", sourceType: "changelog", title: "今日更新" }),
+      item({ id: "blog:old", sourceType: "blog", title: "昨天博客", publishedAt: "2026-10-15T09:00:00" }),
+    ]);
+    const runs: string[] = [];
+    const runner: CommandRunner = (file, args) => {
+      runs.push(`${file} ${args.slice(0, 2).join(" ")}`);
+      return Promise.resolve({ code: 0, stdout: "" });
+    };
+    // 开关关（默认）+ 已配置接收人：也必须只走 dry-run，不调用 dws。
+    const bridge = createOpsBridge({
+      cacheDir: dir, now: () => NOW, run: runner, env: {
+        OPS_DINGTALK_PUSH_ENABLED: "0",
+        OPS_DINGTALK_PUSH_OPEN_DINGTALK_ID: "receiverOpenId123",
+      },
+    });
+    const result = await bridge.pushCard();
+    assert.ok(result.ok);
+    assert.equal(result.preview.mode, "dry_run");
+    assert.equal(result.preview.date, "2026-10-16");
+    assert.equal(result.preview.entryCount, 2);
+    assert.equal(result.preview.receiverConfigured, true);
+    assert.match(result.preview.note, /未实际发送/);
+    // 内容只能来自当日卡：今日条目在内、昨日条目不在。
+    assert.match(result.preview.cardText, /运营推广日报 · 2026-10-16/);
+    assert.match(result.preview.cardText, /今日博客/);
+    assert.match(result.preview.cardText, /今日更新/);
+    assert.ok(!result.preview.cardText.includes("昨天博客"));
+    // dws 从未被调用。
+    assert.deepEqual(runs, []);
+    // 预览产物 0600 落盘且不落接收人 ID。
+    assert.equal((await stat(join(dir, "ops-push-preview.json"))).mode & 0o777, 0o600);
+    const raw = await readFile(join(dir, "ops-push-preview.json"), "utf-8");
+    assert.ok(!raw.includes("receiverOpenId123"), "receiver id must not be persisted");
+  });
+});
+
+test("push card refuses real sends without the explicit switch or a receiver", async () => {
+  await withCache(async (dir) => {
+    await writeOpsDigest(dir, [item({ id: "blog:today", sourceType: "blog", title: "今日博客" })]);
+    const runner: CommandRunner = () => Promise.resolve({ code: 0, stdout: "" });
+    // 开了开关但没有接收人 → 明确拒绝。
+    const noReceiver = createOpsBridge({
+      cacheDir: dir, now: () => NOW, run: runner, env: { OPS_DINGTALK_PUSH_ENABLED: "1" },
+    });
+    assert.deepEqual(await noReceiver.pushCard(), { ok: false, error: "recipient_not_configured" });
+    // 接收人格式非法同样拒绝。
+    const badReceiver = createOpsBridge({
+      cacheDir: dir, now: () => NOW, run: runner, env: {
+        OPS_DINGTALK_PUSH_ENABLED: "1",
+        OPS_DINGTALK_PUSH_OPEN_DINGTALK_ID: "bad id with spaces!",
+      },
+    });
+    assert.deepEqual(await badReceiver.pushCard(), { ok: false, error: "recipient_not_configured" });
+    // 没有摘要时如实 404 语义。
+    const empty = createOpsBridge({ cacheDir: join(dir, "none"), now: () => NOW, env: {}, run: runner });
+    assert.deepEqual(await empty.pushCard(), { ok: false, error: "digest_unavailable" });
+  });
+});
+
+test("push card real-send path builds a single-chat command and reports failures honestly", async () => {
+  await withCache(async (dir) => {
+    await writeOpsDigest(dir, [item({ id: "blog:today", sourceType: "blog", title: "今日博客" })]);
+    const commands: { file: string; args: string[] }[] = [];
+    const runner: CommandRunner = async (file, args) => {
+      commands.push({ file, args: [...args] });
+      return { code: 1, stdout: '{"ok":false}' };
+    };
+    const bridge = createOpsBridge({
+      cacheDir: dir, now: () => NOW, run: runner, env: {
+        OPS_DINGTALK_PUSH_ENABLED: "1",
+        OPS_DINGTALK_PUSH_OPEN_DINGTALK_ID: "receiverOpenId123",
+      },
+    });
+    // dws 失败 → push_failed，不落 sent 产物。
+    assert.deepEqual(await bridge.pushCard(), { ok: false, error: "push_failed" });
+    assert.equal(commands.length, 1);
+    assert.equal(commands[0]!.file, "dws");
+    assert.equal(commands[0]!.args[0], "chat");
+    assert.equal(commands[0]!.args[1], "+messages-send-card");
+    assert.ok(commands[0]!.args.includes("--receiver-open-dingtalk-id"));
+    assert.ok(!commands[0]!.args.includes("--group"), "group push must never be constructed");
+    assert.ok(!commands[0]!.args.includes("--at-all"));
   });
 });
 

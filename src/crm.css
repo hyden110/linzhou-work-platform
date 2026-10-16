@@ -15,6 +15,9 @@
 .crm-empty p { margin: 0; }
 .crm-muted { margin: 0; padding: 18px; color: var(--text-dim); font-size: 11px; }
 .crm-more { margin: 4px auto 14px; }
+.crm-fbi-fetch { display: flex; justify-content: center; }
+.crm-fbi-fetch .text-button { font-size: 11px; }
+.crm-fbi-fetch .text-button:disabled { color: var(--text-soft); cursor: default; }
 
 .crm-metrics { grid-template-columns: repeat(3, 1fr); }
 

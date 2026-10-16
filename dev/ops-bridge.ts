@@ -24,6 +24,7 @@ const OPS_AI_TIMEOUT_MS = 20_000;
 const OPS_AI_MAX_OUTPUT_CHARS = 300;
 const OPS_WECHAT_FETCH_TIMEOUT_MS = 15_000;
 const OPS_MAX_REDIRECT_HOPS = 5;
+const OPS_PUSH_RECEIVER_PATTERN = /^[A-Za-z0-9]{8,128}$/;
 const OPS_FETCH_HOSTS = new Set([
   "qoder.com", "www.qoder.com", "qoder.com.cn", "www.qoder.com.cn",
   "help.aliyun.com", "qwenwork.cn", "www.qwenwork.cn",
@@ -110,6 +111,23 @@ export interface OpsWechatLink {
   readonly title: string | null;
 }
 
+/** DingTalk push preview artifact: the exact card content plus its routing metadata. */
+export interface OpsPushPreview {
+  readonly mode: "dry_run" | "sent";
+  readonly generatedAt: string;
+  readonly date: string;
+  readonly cardTitle: string;
+  readonly cardText: string;
+  readonly entryCount: number;
+  /** Only ever the env-configured single-chat receiver id, never a group id. */
+  readonly receiverConfigured: boolean;
+  readonly note: string;
+}
+
+export type PushCardResult =
+  | { readonly ok: true; readonly preview: OpsPushPreview }
+  | { readonly ok: false; readonly error: "digest_unavailable" | "push_disabled" | "recipient_not_configured" | "push_failed" };
+
 export type RegisterWechatResult =
   | { readonly ok: true; readonly link: OpsWechatLink }
   | { readonly ok: false; readonly error: "invalid_url" };
@@ -121,6 +139,8 @@ export interface OpsBridge {
   readonly card: () => Promise<OpsCard | undefined>;
   readonly wechatLinks: () => Promise<readonly OpsWechatLink[]>;
   readonly registerWechatLink: (url: string) => Promise<RegisterWechatResult>;
+  /** Render the daily ops card into a DingTalk streaming-text card. Dry-run only unless explicitly enabled. */
+  readonly pushCard: () => Promise<PushCardResult>;
 }
 
 export interface OpsBridgeOptions {
@@ -264,6 +284,45 @@ function countsOfGroups(groups: readonly OpsCardGroup[]): Record<OpsSourceType, 
   return Object.fromEntries(
     OPS_SOURCE_TYPES.map((key) => [key, groups.find((group) => group.key === key)?.count ?? 0]),
   ) as Record<OpsSourceType, number>;
+}
+
+/** Build the DingTalk streaming-text card content strictly from the daily card artifact. */
+export function buildPushCardText(card: OpsCard): string {
+  const lines: string[] = [`## 运营推广日报 · ${card.date}`, "", card.overview.text, ""];
+  for (const group of card.groups) {
+    if (group.count === 0) continue;
+    lines.push(`**${group.label}（${group.count}）**`);
+    for (const entry of group.items) {
+      const time = entry.publishedAt
+        ? entry.publishedAt.replace("T", " ").slice(11, 16)
+        : "";
+      lines.push(`- ${entry.title}${time ? `（${time}）` : ""}`);
+    }
+    lines.push("");
+  }
+  lines.push(`> 数据：本机只读采集 · 卡片生成 ${card.generatedAt}`);
+  return lines.join("\n");
+}
+
+/** The only dws command this bridge will ever run for pushes: a single-chat streaming card. */
+export function buildPushCommand(receiverOpenId: string, cardText: string): readonly string[] {
+  return [
+    "chat", "+messages-send-card",
+    "--receiver-open-dingtalk-id", receiverOpenId,
+    "--content", cardText,
+    "--flow-status", "3",
+    "--format", "json",
+  ];
+}
+
+function isPushEnabled(env: NodeJS.ProcessEnv): boolean {
+  const flag = (env.OPS_DINGTALK_PUSH_ENABLED ?? "").trim().toLowerCase();
+  return flag === "1" || flag === "true" || flag === "yes";
+}
+
+function pushReceiver(env: NodeJS.ProcessEnv): string | null {
+  const receiver = (env.OPS_DINGTALK_PUSH_OPEN_DINGTALK_ID ?? "").trim();
+  return OPS_PUSH_RECEIVER_PATTERN.test(receiver) ? receiver : null;
 }
 
 /** Shape guard for the overview artifact written at refresh time; GET only reads it. */
@@ -470,6 +529,39 @@ export function createOpsBridge(options: OpsBridgeOptions = {}): OpsBridge {
     }
   };
 
+  /**
+   * The daily card, built from the digest projection plus the overview artifact.
+   * Pure read: no external calls, no writes.
+   */
+  const buildCard = async (): Promise<OpsCard | undefined> => {
+    const digest = await projectDigest(await readJson(digestPath));
+    if (!digest) return undefined;
+    const nowMs = now();
+    const { groups, total, dedupedFrom } = buildTodayGroups(digest, nowMs);
+    const apiKey = env.DASHSCOPE_API_KEY;
+    const template = templateOverview(countsOfGroups(groups), total, Boolean(apiKey));
+    let overview = template;
+    const cachedRaw = await readJson(overviewPath);
+    if (cachedRaw && typeof cachedRaw === "object" && !Array.isArray(cachedRaw)) {
+      const cached = cachedRaw as Record<string, unknown>;
+      const cachedOverview = asOverview(cached.overview);
+      if (cachedOverview
+        && cached.date === localDateKey(nowMs)
+        && cached.digestGeneratedAt === digest.generatedAt
+        && cached.total === total) {
+        overview = cachedOverview;
+      }
+    }
+    return {
+      date: localDateKey(nowMs),
+      generatedAt: digest.generatedAt,
+      total,
+      dedupedFrom,
+      overview,
+      groups,
+    };
+  };
+
   return {
     digest: async () => projectDigest(await readJson(digestPath)),
 
@@ -499,36 +591,60 @@ export function createOpsBridge(options: OpsBridgeOptions = {}): OpsBridge {
       return refresh;
     },
 
-    card: async () => {
-      const digest = await projectDigest(await readJson(digestPath));
-      if (!digest) return undefined;
-      const nowMs = now();
-      const { groups, total, dedupedFrom } = buildTodayGroups(digest, nowMs);
-      const apiKey = env.DASHSCOPE_API_KEY;
-      const template = templateOverview(countsOfGroups(groups), total, Boolean(apiKey));
-      let overview = template;
-      const cachedRaw = await readJson(overviewPath);
-      if (cachedRaw && typeof cachedRaw === "object" && !Array.isArray(cachedRaw)) {
-        const cached = cachedRaw as Record<string, unknown>;
-        const cachedOverview = asOverview(cached.overview);
-        if (cachedOverview
-          && cached.date === localDateKey(nowMs)
-          && cached.digestGeneratedAt === digest.generatedAt
-          && cached.total === total) {
-          overview = cachedOverview;
-        }
-      }
-      return {
-        date: localDateKey(nowMs),
-        generatedAt: digest.generatedAt,
-        total,
-        dedupedFrom,
-        overview,
-        groups,
-      };
-    },
+    card: buildCard,
 
     wechatLinks: () => readWechat(),
+
+    pushCard: async () => {
+      // 内容只能来自当日卡产物：buildCard 读的就是 digest 投影 + overview 产物。
+      const card = await buildCard();
+      if (!card) return { ok: false, error: "digest_unavailable" };
+      const cardText = buildPushCardText(card);
+      const enabled = isPushEnabled(env);
+      const receiver = pushReceiver(env);
+      const generatedAt = iso();
+      const previewPath = join(cacheDir, "ops-push-preview.json");
+      const persist = async (preview: OpsPushPreview) => {
+        await mkdir(cacheDir, { recursive: true, mode: 0o700 });
+        await writeJsonAtomic(previewPath, preview);
+        return preview;
+      };
+
+      if (!enabled) {
+        // 默认路径：只生成预览，绝不实际发送（dws 不被调用）。
+        const preview = await persist({
+          mode: "dry_run",
+          generatedAt,
+          date: card.date,
+          cardTitle: `运营推广日报 · ${card.date}`,
+          cardText,
+          entryCount: card.total,
+          receiverConfigured: receiver !== null,
+          note: "dry-run 预览：未实际发送。确认内容后设置 OPS_DINGTALK_PUSH_ENABLED=1 并配置 OPS_DINGTALK_PUSH_OPEN_DINGTALK_ID 才会真发（仅单聊用户本人）。",
+        });
+        return { ok: true, preview };
+      }
+      if (!receiver) return { ok: false, error: "recipient_not_configured" };
+
+      const command = buildPushCommand(receiver, cardText);
+      const result = await run("dws", command, {
+        cwd: PROJECT_ROOT,
+        env: process.env,
+        timeoutMs: 60_000,
+      }).catch(() => ({ code: null, stdout: "" }));
+      if (result.code !== 0) return { ok: false, error: "push_failed" };
+      const preview = await persist({
+        mode: "sent",
+        generatedAt,
+        date: card.date,
+        cardTitle: `运营推广日报 · ${card.date}`,
+        cardText,
+        entryCount: card.total,
+        receiverConfigured: true,
+        note: "已通过 dws 单聊发送（仅用户本人）。",
+      });
+      return { ok: true, preview };
+    },
 
     registerWechatLink: async (url) => {
       const trimmed = typeof url === "string" ? url.trim() : "";

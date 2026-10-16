@@ -17,6 +17,7 @@ import {
 import { createSolutionStore, type SolutionStore } from "./solution-store.ts";
 import { createCrmBridge, type CrmBridge, type InsightRecord } from "./crm-bridge.ts";
 import { createOpsBridge, type OpsBridge } from "./ops-bridge.ts";
+import { createFbiMetricsBridge, type FbiMetricsBridge } from "./fbi-metrics-bridge.ts";
 
 /**
  * Router for the local-only endpoints that back the workbench's "open on this Mac",
@@ -115,6 +116,7 @@ export interface LocalRouterDependencies {
   readonly solutionsDir?: string;
   readonly crmBridge?: CrmBridge;
   readonly opsBridge?: OpsBridge;
+  readonly fbiMetricsBridge?: FbiMetricsBridge;
 }
 
 function publicInsight(record: InsightRecord) {
@@ -131,6 +133,7 @@ export function createLocalRouter(dependencies: LocalRouterDependencies) {
     ?? createSolutionStore(dependencies.solutionsDir ?? SOLUTIONS_PATH);
   const crmBridge = dependencies.crmBridge ?? createCrmBridge();
   const opsBridge = dependencies.opsBridge ?? createOpsBridge();
+  const fbiMetricsBridge = dependencies.fbiMetricsBridge ?? createFbiMetricsBridge();
   const allowedOrigins = new Set(dependencies.allowedOrigins ?? DEFAULT_ALLOWED_ORIGINS);
   const allowedHosts = new Set([
     `127.0.0.1:${dependencies.port}`,
@@ -185,6 +188,22 @@ export function createLocalRouter(dependencies: LocalRouterDependencies) {
       return jsonResponse({ ok: true, data: record ? publicInsight(record) : null });
     }
 
+    if (route === "/local/fbi/metrics" && request.method === "GET") {
+      const metrics = await fbiMetricsBridge.metrics();
+      return metrics
+        ? jsonResponse({ ok: true, data: metrics, status: fbiMetricsBridge.status() })
+        : jsonResponse({ ok: false, error: "metrics_unavailable", status: fbiMetricsBridge.status() }, 404);
+    }
+
+    if (route === "/local/fbi/metrics" && request.method === "POST") {
+      const result = await fbiMetricsBridge.start();
+      if (!result.ok) {
+        const status = result.error === "busy" ? 429 : 400;
+        return jsonResponse({ ok: false, error: result.error, status: fbiMetricsBridge.status() }, status);
+      }
+      return jsonResponse({ ok: true, data: fbiMetricsBridge.status() }, 202);
+    }
+
     if (route === "/local/fbi/insight" && request.method === "POST") {
       const body = await readJsonBody(request);
       const cid = typeof body?.cid === "string" ? body.cid : "";
@@ -226,6 +245,17 @@ export function createLocalRouter(dependencies: LocalRouterDependencies) {
       const result = await opsBridge.registerWechatLink(url);
       if (!result.ok) return jsonResponse({ ok: false, error: "invalid_url" }, 400);
       return jsonResponse({ ok: true, data: result.link }, 201);
+    }
+
+    if (route === "/local/ops/push" && request.method === "POST") {
+      const result = await opsBridge.pushCard();
+      if (!result.ok) {
+        const status = result.error === "digest_unavailable" ? 404
+          : result.error === "recipient_not_configured" || result.error === "push_disabled" ? 400
+            : 500;
+        return jsonResponse({ ok: false, error: result.error }, status);
+      }
+      return jsonResponse({ ok: true, data: result.preview }, result.preview.mode === "sent" ? 200 : 202);
     }
 
     if (route === "/local/preview" && request.method === "GET") {
