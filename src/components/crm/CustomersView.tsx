@@ -1,12 +1,15 @@
 import { useCallback, useMemo, useState } from "react";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, TrendingDown, TrendingUp } from "lucide-react";
 import {
   customerLifecycle,
   customersByGaap,
+  gaapAnomalies,
   overviewBoard,
   projectsByCustomer,
   topBoard,
   type CustomerLifecycle,
+  type GaapAlert,
+  type GaapAlertTier,
   type OverviewBoard,
 } from "../../lib/crm-model";
 import type { TopChecks } from "../../lib/crm-types";
@@ -36,6 +39,72 @@ function SignedRate({ rate }: { rate: number | null }) {
   return <small className={rate < 0 ? "is-down" : "is-up"}>{rate > 0 ? "+" : ""}{rate.toFixed(1)}%</small>;
 }
 
+const GAAP_TIER_LABEL: Record<GaapAlertTier, string> = {
+  T3: "严重异动",
+  T2: "关注",
+  T1: "提示",
+};
+
+function GaapAlertCard({ alert, onOpen }: { alert: GaapAlert; onOpen: () => void }) {
+  const { customer, direction, tier, rate, diff, basis, lowBase, estimatedDiff } = alert;
+  const Trend = direction === "up" ? TrendingUp : TrendingDown;
+  return (
+    <li className={`gaap-alert-card is-${tier.toLowerCase()} is-${direction}`}>
+      <button className="gaap-alert-card__main" onClick={onOpen} title="打开客户详情">
+        <strong>{customer.name}</strong>
+        <span className="gaap-alert-card__move">
+          <Trend size={14} aria-hidden />
+          {direction === "up" ? "暴增" : "暴跌"} {rate > 0 ? "+" : ""}{rate.toFixed(1)}%
+          {diff !== null && `（${diff > 0 ? "+" : ""}${formatGaap(diff)}）`}
+          {estimatedDiff && diff !== null && <em className="gaap-alert-card__flag">推算值</em>}
+          {lowBase && <em className="gaap-alert-card__flag">低基数</em>}
+        </span>
+        <span className="gaap-alert-card__basis">上月基数 {formatGaap(basis)}</span>
+      </button>
+      <span className={`gaap-alert-card__tier is-${tier.toLowerCase()}`}>
+        {tier} · {GAAP_TIER_LABEL[tier]}
+      </span>
+    </li>
+  );
+}
+
+function GaapAnomalyPanel({
+  alerts,
+  hasRateData,
+  generatedAt,
+  onOpen,
+}: {
+  alerts: readonly GaapAlert[];
+  hasRateData: boolean;
+  generatedAt: string | null;
+  onOpen: (cid: string) => void;
+}) {
+  return (
+    <section className="panel" aria-label="GAAP 异动分析">
+      <header className="panel__header">
+        <div><span className="eyebrow">GAAP ANOMALY</span><h2>GAAP 异动分析</h2></div>
+        <span>
+          {alerts.length} 条异动 · 数据时效：{generatedAt ? formatDateTime(generatedAt) : "未知"}
+        </span>
+      </header>
+      <p className="gaap-alerts__note">
+        口径：昨日 GAAP 环比；阈值 T3 环比 ±50% / T2 涨跌 ±30 万 / T1 涨跌 ±5 万，多档取最高档；上月基数低于 30 万只报环比档并标「低基数」。
+      </p>
+      {!hasRateData
+        ? <p className="crm-muted">无环比数据（快照缺失昨日环比字段），暂无法检测。</p>
+        : alerts.length === 0
+          ? <p className="crm-muted">未发现达到阈值的异动。</p>
+          : (
+            <ul className="gaap-alerts">
+              {alerts.map((alert) => (
+                <GaapAlertCard key={alert.customer.cid} alert={alert} onOpen={() => onOpen(alert.customer.cid)} />
+              ))}
+            </ul>
+          )}
+    </section>
+  );
+}
+
 export function CustomersView() {
   const { snapshot } = useCrm();
   const [openCid, setOpenCid] = useState("");
@@ -53,6 +122,11 @@ export function CustomersView() {
   const board = useMemo(() => (snapshot ? overviewBoard(snapshot) : null), [snapshot]);
   const top = useMemo(() => (snapshot ? topBoard(snapshot) : null), [snapshot]);
   const rows = useMemo(() => (snapshot ? customersByGaap(snapshot.customers) : []), [snapshot]);
+  const alerts = useMemo(() => (snapshot ? gaapAnomalies(snapshot.customers) : []), [snapshot]);
+  const hasRateData = useMemo(
+    () => Boolean(snapshot?.customers.some((customer) => customer.yesterdayGaapRate !== null && customer.yesterdayGaapRate !== undefined)),
+    [snapshot],
+  );
   const openRow = openCid ? lifecycleRows.get(openCid) ?? null : null;
 
   return (
@@ -92,6 +166,13 @@ export function CustomersView() {
                 warning={!board.customerCountMatches}
               />
             </section>
+
+            <GaapAnomalyPanel
+              alerts={alerts}
+              hasRateData={hasRateData}
+              generatedAt={snapshot.generatedAt}
+              onOpen={setOpenCid}
+            />
 
             <section className="panel">
               <header className="panel__header">

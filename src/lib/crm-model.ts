@@ -185,6 +185,88 @@ export function customersByGaap(customers: readonly CustomerItem[]): CustomerIte
   );
 }
 
+// ---------------------------------------------------------------------------
+// GAAP 异动分析：昨日环比 / 绝对变动检测（阈值可配，纯函数可测）
+// ---------------------------------------------------------------------------
+
+/** 三档阈值 + 低基数门槛（默认值可配；MVP-2 按真实分布再标定）。 */
+export const GAAP_ALERT_THRESHOLDS = {
+  /** T1 提示档：昨日环比涨跌额绝对值（元）。 */
+  absoluteNotice: 50_000,
+  /** T2 关注档：昨日环比涨跌额绝对值（元）。 */
+  absoluteWatch: 300_000,
+  /** T3 严重档：昨日环比比例绝对值（百分点，yesterdayGaapRate 即百分比单位）。 */
+  rateSevere: 50,
+  /** 低基数门槛（元）：上月 GAAP 低于此值时绝对档不上报，环比命中标「低基数」。 */
+  lowBaseGaap: 300_000,
+};
+
+export type GaapAlertTier = "T1" | "T2" | "T3";
+export type GaapAlertDirection = "up" | "down";
+
+export interface GaapAlert {
+  customer: CustomerItem;
+  direction: GaapAlertDirection;
+  tier: GaapAlertTier;
+  /** 昨日环比（百分点，带符号）。 */
+  rate: number;
+  /** 昨日涨跌额（元，带符号）；rate ≤ -100% 无法反推时为 null。 */
+  diff: number | null;
+  /** 上月 GAAP 基数（元）。 */
+  basis: number | null;
+  /** 上月基数低于门槛：环比命中可信度低，仅作提示。 */
+  lowBase: boolean;
+  /** diff 由 rate 反推（快照无 extGaapDDiff 投影的旧数据），UI 标「推算值」。 */
+  estimatedDiff: boolean;
+}
+
+const TIER_RANK: Record<GaapAlertTier, number> = { T1: 1, T2: 2, T3: 3 };
+
+/** 单客户异动判定；无环比 / 环比为 0 / 昨日值缺失 → null（不上报）。 */
+export function gaapAnomaly(customer: CustomerItem): GaapAlert | null {
+  const rate = customer.yesterdayGaapRate;
+  const yesterday = customer.yesterdayGaap;
+  if (rate === null || rate === undefined || rate === 0 || yesterday === null || yesterday === undefined) {
+    return null;
+  }
+  const direction: GaapAlertDirection = rate > 0 ? "up" : "down";
+  const basis = customer.lastMonthGaap ?? null;
+  const lowBase = (customer.lastMonthGaap ?? 0) < GAAP_ALERT_THRESHOLDS.lowBaseGaap;
+
+  // diff：优先用鲲鹏自带的涨跌额；旧快照缺失时按 rate 反推（rate > -100% 才有定义）。
+  let diff: number | null = customer.yesterdayGaapDiff ?? null;
+  let estimatedDiff = false;
+  if (diff === null) {
+    estimatedDiff = true;
+    diff = rate > -100 ? yesterday * (rate / 100) / (1 + rate / 100) : null;
+  }
+
+  const tiers: GaapAlertTier[] = [];
+  if (Math.abs(rate) >= GAAP_ALERT_THRESHOLDS.rateSevere) tiers.push("T3");
+  // 绝对档受低基数门槛约束：上月基数不足时不报绝对档（避免小客户噪声）。
+  if (diff !== null && !lowBase) {
+    if (Math.abs(diff) >= GAAP_ALERT_THRESHOLDS.absoluteWatch) tiers.push("T2");
+    else if (Math.abs(diff) >= GAAP_ALERT_THRESHOLDS.absoluteNotice) tiers.push("T1");
+  }
+  if (tiers.length === 0) return null;
+  const tier = tiers.reduce((best, next) => (TIER_RANK[next] > TIER_RANK[best] ? next : best));
+
+  return { customer, direction, tier, rate, diff, basis, lowBase, estimatedDiff };
+}
+
+/** 全量客户异动检测：按档位降序、同档按 |rate| 降序。 */
+export function gaapAnomalies(customers: readonly CustomerItem[]): GaapAlert[] {
+  return customers
+    .flatMap((customer) => {
+      const alert = gaapAnomaly(customer);
+      return alert ? [alert] : [];
+    })
+    .sort((a, b) =>
+      TIER_RANK[b.tier] - TIER_RANK[a.tier]
+      || Math.abs(b.rate) - Math.abs(a.rate)
+      || a.customer.name.localeCompare(b.customer.name, "zh-CN"));
+}
+
 export type Urgency = "overdue" | "today" | "soon" | "watch";
 
 export interface ActionItem {
@@ -256,6 +338,141 @@ function byTime(a: ActionItem, b: ActionItem): number {
   if (tier !== 0) return tier;
   if (a.kind === "mention") return (b.at ?? -Infinity) - (a.at ?? -Infinity);
   return (a.at ?? Infinity) - (b.at ?? Infinity);
+}
+
+// ---------------------------------------------------------------------------
+// PPL 跟进：MaaS 三态泳道（过渡口径 = 关键词初筛 + 人工覆盖，cate 禁止映射）
+// ---------------------------------------------------------------------------
+
+export type MaasStatus = "maas" | "non_maas" | "unconfirmed";
+export type MaasBasis = "override" | "keyword" | "none";
+
+export interface MaasDecision {
+  status: MaasStatus;
+  /** 判定来源：override=人工覆盖（可审计）/ keyword=关键词初筛（UI 标「疑似」）/ none=无法判定。 */
+  basis: MaasBasis;
+}
+
+/**
+ * MaaS 关键词初筛表（过渡方案占位词表，待用户确认后替换；不作业务口径）。
+ * 仅匹配项目名/客户名；cate（混合云/公有云/国际）与 MaaS 维度无关，禁止映射。
+ */
+export const MAAS_KEYWORDS: readonly string[] = ["MaaS", "大模型", "模型服务", "百炼", "推理"];
+
+/** 人工覆盖表（CID → maas/non_maas），优先级最高。 */
+export type MaasOverrides = Readonly<Record<string, "maas" | "non_maas">>;
+
+export function classifyMaas(
+  customer: CustomerItem,
+  projects: readonly ProjectItem[],
+  overrides: MaasOverrides = {},
+): MaasDecision {
+  const override = overrides[customer.cid];
+  if (override === "maas" || override === "non_maas") return { status: override, basis: "override" };
+  const haystack = [customer.name, ...projects.map((project) => project.name)].join(" ").toLowerCase();
+  if (MAAS_KEYWORDS.some((keyword) => haystack.includes(keyword.toLowerCase()))) {
+    return { status: "maas", basis: "keyword" };
+  }
+  // 不硬二分：无法判定一律「未分类」，不静默归入非 MaaS。
+  return { status: "unconfirmed", basis: "none" };
+}
+
+export interface PplFollowupCustomer {
+  customer: CustomerItem;
+  maas: MaasDecision;
+  /** 该客户的全部快照项目（--state normal 口径）。 */
+  projects: ProjectItem[];
+}
+
+export interface PplFollowupBoard {
+  lanes: Readonly<Record<MaasStatus, PplFollowupCustomer[]>>;
+  /** cid/customerName 均匹配不上客户的项目：显式列出，绝不静默丢弃。 */
+  unmatched: ProjectItem[];
+  counts: {
+    customers: number;
+    maas: number;
+    nonMaas: number;
+    unconfirmed: number;
+    projects: number;
+    unmatched: number;
+  };
+}
+
+const FOLLOWUP_LANES: readonly MaasStatus[] = ["maas", "non_maas", "unconfirmed"];
+
+export function pplFollowupBoard(
+  snapshot: Pick<CrmSnapshot, "customers" | "projects">,
+  overrides: MaasOverrides = {},
+): PplFollowupBoard {
+  const byCid = new Map(snapshot.customers.map((customer) => [customer.cid, customer]));
+  const byName = new Map(snapshot.customers.map((customer) => [customer.name, customer]));
+  const grouped = new Map<string, ProjectItem[]>();
+  const unmatched: ProjectItem[] = [];
+  for (const project of snapshot.projects) {
+    const cid = project.cid && byCid.has(project.cid)
+      ? project.cid
+      : project.customerName ? byName.get(project.customerName)?.cid : undefined;
+    if (!cid) {
+      unmatched.push(project);
+      continue;
+    }
+    grouped.set(cid, [...(grouped.get(cid) ?? []), project]);
+  }
+  const lanes: Record<MaasStatus, PplFollowupCustomer[]> = { maas: [], non_maas: [], unconfirmed: [] };
+  for (const customer of snapshot.customers) {
+    const projects = grouped.get(customer.cid) ?? [];
+    const decision = classifyMaas(customer, projects, overrides);
+    lanes[decision.status].push({ customer, maas: decision, projects });
+  }
+  for (const lane of FOLLOWUP_LANES) {
+    lanes[lane].sort((a, b) =>
+      (b.customer.lastMonthGaap ?? 0) - (a.customer.lastMonthGaap ?? 0)
+      || a.customer.name.localeCompare(b.customer.name, "zh-CN"));
+  }
+  return {
+    lanes,
+    unmatched,
+    counts: {
+      customers: snapshot.customers.length,
+      maas: lanes.maas.length,
+      nonMaas: lanes.non_maas.length,
+      unconfirmed: lanes.unconfirmed.length,
+      projects: snapshot.projects.length,
+      unmatched: unmatched.length,
+    },
+  };
+}
+
+/**
+ * 阶段筛选（stageName 精确匹配，null = 全部）：无命中项目的客户隐藏，
+ * 项目计数守恒——各泳道可见项目 + 未匹配 = 该阶段的项目总数。
+ */
+export function filterFollowupByStage(board: PplFollowupBoard, stageName: string | null): PplFollowupBoard {
+  if (stageName === null) return board;
+  const keep = (project: ProjectItem) => (project.stageName ?? "") === stageName;
+  const lanes = { maas: [], non_maas: [], unconfirmed: [] } as Record<MaasStatus, PplFollowupCustomer[]>;
+  for (const lane of FOLLOWUP_LANES) {
+    lanes[lane] = board.lanes[lane]
+      .map((row) => ({ ...row, projects: row.projects.filter(keep) }))
+      .filter((row) => row.projects.length > 0);
+  }
+  const unmatched = board.unmatched.filter(keep);
+  const visibleProjects = FOLLOWUP_LANES.reduce(
+    (sum, lane) => sum + lanes[lane].reduce((count, row) => count + row.projects.length, 0),
+    0,
+  ) + unmatched.length;
+  return {
+    lanes,
+    unmatched,
+    counts: {
+      customers: FOLLOWUP_LANES.reduce((sum, lane) => sum + lanes[lane].length, 0),
+      maas: lanes.maas.length,
+      nonMaas: lanes.non_maas.length,
+      unconfirmed: lanes.unconfirmed.length,
+      projects: visibleProjects,
+      unmatched: unmatched.length,
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------

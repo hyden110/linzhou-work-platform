@@ -51,6 +51,7 @@ def kunpeng_ok(arguments: tuple[str, ...]) -> object:
         return {"success": True, "total": 1, "rows": [{
             "cid": "1001", "name": "示例科技有限公司", "bizCategoryInfo": {"name": "互联网"},
             "extLastMonthGaap": "12,345.6", "extGaapD": 400, "extGaapDRate": -0.4079,
+            "extGaapDDiff": "-165.4",
             "customers": [{"secret": "should not leak"}]}]}
     if arguments[0] == "overview":
         # Shape read back from 鲲鹏 on 2026-10-15: the real number sits in `data`
@@ -120,6 +121,8 @@ class CrmSnapshotTest(unittest.TestCase):
         self.assertEqual(customer["industry"], "互联网")
         self.assertEqual(customer["lastMonthGaap"], 12345.6)
         self.assertEqual(customer["yesterdayGaapRate"], -40.79)
+        # 昨日环比涨跌额投影（extGaapDDiff），旧快照无此字段时前端按 rate 反推。
+        self.assertEqual(customer["yesterdayGaapDiff"], -165.4)
         self.assertNotIn("customers", customer)
         project = snapshot["projects"][0]
         self.assertEqual((project["id"], project["name"], project["cate"]), ("P123", "示例大模型 POC", "公有云"))

@@ -38,7 +38,7 @@ const navigation: NavigationGroup[] = [
       { id: "cockpit", label: "驾驶舱", icon: Gauge },
       { id: "customers", label: "客户盘面", icon: Users },
       { id: "dingtalk", label: "钉群盘面", icon: MessagesSquare },
-      { id: "lifecycle", label: "客户生命周期", icon: Workflow },
+      { id: "lifecycle", label: "PPL 跟进", icon: Workflow },
     ],
   },
   {

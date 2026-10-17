@@ -189,3 +189,59 @@
   .crm-drawer { padding: 18px 16px; }
   .crm-facts { grid-template-columns: 1fr 1fr; }
 }
+
+/* --- GAAP 异动分析（客户盘面） --- */
+.gaap-alerts__note { margin: 0; padding: 10px 18px; border-bottom: 1px solid rgba(27,42,47,.6); color: var(--text-dim); font-size: 10px; line-height: 1.6; }
+.gaap-alerts { display: flex; flex-direction: column; margin: 0; padding: 4px 0; list-style: none; }
+.gaap-alert-card { display: flex; align-items: stretch; justify-content: space-between; gap: 12px; padding: 10px 18px; border-bottom: 1px solid rgba(27,42,47,.6); }
+.gaap-alert-card:last-child { border-bottom: 0; }
+.gaap-alert-card__main { display: flex; min-width: 0; flex-direction: column; gap: 3px; padding: 0; border: 0; background: none; color: inherit; text-align: left; cursor: pointer; }
+.gaap-alert-card__main:hover strong { color: var(--mint-soft); }
+.gaap-alert-card__main strong { color: var(--text); font-size: 12px; font-weight: 540; }
+.gaap-alert-card__move { display: inline-flex; align-items: center; gap: 5px; color: var(--text-soft); font-size: 11px; }
+.gaap-alert-card.is-up .gaap-alert-card__move { color: var(--mint-soft); }
+.gaap-alert-card.is-down .gaap-alert-card__move { color: var(--danger); }
+.gaap-alert-card__basis { color: var(--text-dim); font-size: 10px; }
+.gaap-alert-card__flag { margin-left: 6px; padding: 1px 5px; border-radius: 4px; color: #ebc584; background: rgba(240,187,98,.1); font-size: 9px; font-style: normal; }
+.gaap-alert-card__tier { flex: none; align-self: center; padding: 3px 8px; border-radius: 5px; font: 500 10px ui-monospace, monospace; white-space: nowrap; }
+.gaap-alert-card__tier.is-t1 { color: var(--mint-soft); background: rgba(126,226,184,.08); }
+.gaap-alert-card__tier.is-t2 { color: #ebc584; background: rgba(240,187,98,.12); }
+.gaap-alert-card__tier.is-t3 { color: #f0a0a0; background: rgba(240,120,120,.14); }
+
+/* --- PPL 跟进视图 --- */
+.crm-followup-board { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; align-items: start; }
+.crm-followup-lane { display: flex; min-width: 0; flex-direction: column; }
+.crm-followup-lane > header { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; padding: 14px 15px 12px; border-bottom: 1px solid var(--line); }
+.crm-followup-lane > header h2 { margin: 0; font-size: 13px; font-weight: 600; }
+.crm-followup-lane > header b { color: var(--mint-soft); font: 500 18px ui-monospace, monospace; }
+.crm-followup-lane > header p { grid-column: 1 / -1; margin: 0; color: var(--text-dim); font-size: 10px; line-height: 1.5; }
+.crm-followup-lane ul { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 10px; list-style: none; }
+.crm-followup-customer { display: flex; flex-direction: column; gap: 6px; padding: 11px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: rgba(255,255,255,.015); }
+.crm-followup-customer__head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.crm-followup-customer__head strong { min-width: 0; overflow: hidden; color: var(--text); font-size: 12px; font-weight: 540; text-overflow: ellipsis; white-space: nowrap; }
+.crm-followup-customer__meta { display: flex; align-items: center; gap: 6px; color: var(--text-dim); font-size: 10px; flex-wrap: wrap; }
+.crm-followup-customer__meta b { color: var(--text-soft); font: 500 11px ui-monospace, monospace; }
+.crm-maas-badge { padding: 1px 6px; border-radius: 4px; font-size: 9px; white-space: nowrap; }
+.crm-maas-badge--maas { color: var(--mint-soft); background: rgba(126,226,184,.1); }
+.crm-maas-badge--non_maas { color: var(--text-soft); background: rgba(255,255,255,.06); }
+.crm-maas-badge--unconfirmed { color: #ebc584; background: rgba(240,187,98,.12); }
+.crm-ppl-card { display: flex; flex-direction: column; gap: 3px; padding: 8px 10px; border-left: 2px solid var(--line); border-radius: 0 6px 6px 0; background: rgba(255,255,255,.02); }
+.crm-ppl-card strong { color: var(--text-soft); font-size: 11px; font-weight: 540; line-height: 1.45; }
+.crm-ppl-card small { color: var(--text-dim); font-size: 10px; line-height: 1.5; }
+.crm-ppl-card__flags { color: var(--text-dim); font-size: 10px; }
+.crm-followup-unmatched { margin-top: 14px; }
+.crm-followup-unmatched ul { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 10px 18px 14px; list-style: none; }
+.crm-followup-unmatched li { color: var(--text-dim); font-size: 11px; line-height: 1.5; }
+.crm-lane-tabs { display: none; }
+
+@media (max-width: 1100px) {
+  .crm-followup-board { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 820px) {
+  .crm-lane-tabs { display: flex; gap: 6px; }
+  .crm-lane-tabs button { flex: 1; }
+  .crm-followup-board { grid-template-columns: 1fr; }
+  .crm-followup-board .crm-followup-lane[data-hidden="true"] { display: none; }
+  .gaap-alert-card { flex-direction: column; gap: 6px; }
+  .gaap-alert-card__tier { align-self: flex-start; }
+}

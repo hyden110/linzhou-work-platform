@@ -321,6 +321,8 @@ def _project_customer(row: Mapping[str, Any]) -> dict[str, Any] | None:
         "lastMonthGaap": _number(row.get("extLastMonthGaap")),
         "yesterdayGaap": _number(row.get("extGaapD")),
         "yesterdayGaapRate": _percent(row.get("extGaapDRate")),
+        # 鲲鹏 customers 响应自带的昨日环比涨跌额（元）；旧快照无此字段，前端按 rate 反推并标「推算值」。
+        "yesterdayGaapDiff": _number(row.get("extGaapDDiff")),
         "lastNoteAt": _text(row.get("extLastNoteDate")),
         "relatedAt": _text(row.get("gmtRelateDate")),
     }

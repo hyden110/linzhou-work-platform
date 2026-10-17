@@ -58,6 +58,8 @@ export interface CustomerItem {
   lastMonthGaap: number | null;
   yesterdayGaap: number | null;
   yesterdayGaapRate: number | null;
+  /** 昨日 GAAP 环比涨跌额（元）；旧快照无此字段时为 null，前端按 rate 反推并标「推算值」。 */
+  yesterdayGaapDiff?: number | null;
   lastNoteAt: string | null;
   relatedAt: string | null;
 }
