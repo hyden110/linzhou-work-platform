@@ -6,6 +6,7 @@ import { fetchFbiMetrics, fbiMetricsErrorMessage, startFbiMetrics, type FbiMetri
 import { StatusBadge, ViewHeading } from "../shared";
 import { useCrm } from "./CrmProvider";
 import { CrmGate, RefreshControl, SourceBanner, formatClock, formatDateTime, formatGaap } from "./crm-shared";
+import { PplInspectionPanel } from "./PplInspectionPanel";
 
 const DAY_MS = 86_400_000;
 const QUEUE_PREVIEW = 12;
@@ -87,6 +88,8 @@ function formatMoMRate(rate: number | null): string {
   return rate === null ? "环比 —" : `环比 ${(rate * 100).toLocaleString("zh-CN", { maximumFractionDigits: 1 })}%`;
 }
 
+// formatSeats 已随坐席卡占位停用：在用席位源（席位看板 2000986）接入后再恢复。
+
 function shortDate(date: string | null): string {
   return date ? date.slice(5).replace("-", "/") : "";
 }
@@ -163,7 +166,7 @@ export function CockpitView() {
         {snapshot && model && (
           <>
             <SourceBanner keys={["agenda", "todos", "mentions", "customers"]} />
-            <section className="metric-grid crm-metrics crm-metrics--five" aria-label="关键指标">
+            <section className="metric-grid crm-metrics crm-metrics--seven" aria-label="关键指标">
               <Metric icon={CalendarClock} label="今日日程" value={String(model.todayAgenda.length)} note={`剩余 ${model.todayAgenda.filter((row) => (row.end ?? row.start ?? 0) >= now).length} 场`} primary />
               <Metric icon={CircleAlert} label="逾期待办" value={String(model.overdue)} note={`共 ${snapshot.todos.length} 条未完成`} />
               <Metric icon={Users} label="客户 / 上月 GAAP" value={customersReady ? String(snapshot.customers.length) : "—"} note={customersReady ? `GAAP ${formatGaap(model.gaap)}` : "等待鲲鹏登录"} />
@@ -178,6 +181,20 @@ export function CockpitView() {
                 label="日 GAAP"
                 value={fbiDone ? formatGaap(fbi.metrics?.dailyGaap ?? null) : "—"}
                 note={fbiDone ? `FBI · ${formatMoMRate(fbi.metrics?.moMRate ?? null)}` : fbiStatusNote}
+              />
+              {/* 坐席卡：商机预估口径已被用户否定（量级差一个数量级），在用席位源（席位看板 2000986）
+                  ACL 未批——不显示任何预估值，只显示诚实占位，权限通过后换源接入。 */}
+              <Metric
+                icon={Bot}
+                label="Qoder 坐席数"
+                value="—"
+                note="实时坐席待 FBI 权限（申请中）· 源：席位看板 2000986 在用席位数"
+              />
+              <Metric
+                icon={Users}
+                label="千问办公坐席数"
+                value="—"
+                note="实时坐席待 FBI 权限（申请中）· 源：席位看板 2000986 在用席位数"
               />
             </section>
             {!fbiDone && (
@@ -229,6 +246,8 @@ export function CockpitView() {
                 </section>
               </div>
             </div>
+
+            <PplInspectionPanel />
           </>
         )}
       </CrmGate>

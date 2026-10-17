@@ -18,6 +18,10 @@ const METRICS = {
   validCustomers: 13,
   callVolume: 33190861372.25,
   moMRate: 0.1184,
+  // 坐席卡已改占位：client 对 seats 只透传 null（在用席位待 2000986 权限），
+  // 历史产物若带数值也原样透传（字段不删），渲染层不使用。
+  qoderSeats: null,
+  qwenworkSeats: null,
   error: null,
 };
 
@@ -69,4 +73,13 @@ test("client rejects malformed payloads instead of rendering them", async () => 
     throw new Error("network down");
   };
   await assert.rejects(() => fetchFbiMetrics(unreachable), /unavailable/);
+});
+
+test("null seats stay null through the client (placeholder caliber, never a guessed number)", async () => {
+  // 坐席卡占位口径：seats 为 null 的产物原样透传，客户端不编造数字。
+  const withNullSeats: typeof fetch = async () =>
+    Response.json({ ok: true, data: { ...METRICS, qoderSeats: null, qwenworkSeats: null } });
+  const metrics = await fetchFbiMetrics(withNullSeats);
+  assert.equal(metrics?.qoderSeats, null);
+  assert.equal(metrics?.qwenworkSeats, null);
 });

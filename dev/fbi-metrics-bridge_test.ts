@@ -28,7 +28,11 @@ async function waitFor(predicate: () => boolean | Promise<boolean>): Promise<voi
 
 test("parseMetricsAnswer extracts the fixed schema out of wrapped answers", () => {
   const clean = parseMetricsAnswer('{"date":"2026-10-15","dailyGaap":12345.6,"validCustomers":3,"callVolume":1000,"moMRate":0.5}');
-  assert.deepEqual(clean, { date: "2026-10-15", dailyGaap: 12345.6, validCustomers: 3, callVolume: 1000, moMRate: 0.5 });
+  // 坐席数停用商机预估口径：即使答案里带坐席字段（历史遗留），也一律置 null，不透出。
+  const legacySeats = parseMetricsAnswer('{"date":"2026-10-15","dailyGaap":1,"validCustomers":1,"callVolume":1,"moMRate":null,"qoderSeats":9900,"qwenworkSeats":8800}');
+  assert.equal(legacySeats?.qoderSeats, null);
+  assert.equal(legacySeats?.qwenworkSeats, null);
+  assert.deepEqual(clean, { date: "2026-10-15", dailyGaap: 12345.6, validCustomers: 3, callVolume: 1000, moMRate: 0.5, qoderSeats: null, qwenworkSeats: null });
   const fenced = parseMetricsAnswer('```json\n{"date":"2026-10-15","dailyGaap":null,"validCustomers":null,"callVolume":null,"moMRate":null}\n```');
   assert.equal(fenced?.date, "2026-10-15");
   assert.equal(fenced?.dailyGaap, null);
@@ -47,7 +51,8 @@ test("start resolves the report from env, asks the fixed question and stores met
         return { code: 0, stdout: "提交成功！\nanswerMessageId: msgMetrics123456\nquestionMessageId: q1" };
       }
       if (script.endsWith("query_chat_result.py")) {
-        const finalAnswer = { finalAnswer: '{"date":"2026-10-15","dailyGaap":12345.6,"validCustomers":3,"callVolume":1000,"moMRate":0.25}', finalize: true };
+        // 答案仍带历史坐席字段：bridge 必须置 null 而非透出商机预估值。
+        const finalAnswer = { finalAnswer: '{"date":"2026-10-15","dailyGaap":12345.6,"validCustomers":3,"callVolume":1000,"moMRate":0.25,"qoderSeats":9900,"qwenworkSeats":8800}', finalize: true };
         return { code: 0, stdout: `${FINAL_MARKER}\n${JSON.stringify(finalAnswer, null, 2)}` };
       }
       return { code: 0, stdout: "{}" };
@@ -77,6 +82,9 @@ test("start resolves the report from env, asks the fixed question and stores met
     assert.equal(metrics.dailyGaap, 12345.6);
     assert.equal(metrics.validCustomers, 3);
     assert.equal(metrics.moMRate, 0.25);
+    // 坐席卡占位：seats 恒 null（在用席位待 2000986 权限），即使答案带值也不透出。
+    assert.equal(metrics.qoderSeats, null);
+    assert.equal(metrics.qwenworkSeats, null);
     // 产物 0600 且无凭证/消息 ID 泄漏。
     assert.equal((await stat(join(dir, "fbi-metrics.json"))).mode & 0o777, 0o600);
     const raw = await readFile(join(dir, "fbi-metrics.json"), "utf-8");
@@ -153,7 +161,7 @@ test("router wires fbi metrics endpoints with host and origin guards", async () 
         return { code: 0, stdout: "answerMessageId: msgRouter12345" };
       }
       if (script.endsWith("query_chat_result.py")) {
-        const finalAnswer = { finalAnswer: '{"date":"2026-10-15","dailyGaap":9,"validCustomers":2,"callVolume":8,"moMRate":0.1}', finalize: true };
+        const finalAnswer = { finalAnswer: '{"date":"2026-10-15","dailyGaap":9,"validCustomers":2,"callVolume":8,"moMRate":0.1,"qoderSeats":null,"qwenworkSeats":null}', finalize: true };
         return { code: 0, stdout: `${FINAL_MARKER}\n${JSON.stringify(finalAnswer)}` };
       }
       return { code: 0, stdout: "" };

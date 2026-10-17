@@ -17,6 +17,7 @@ import {
 import { createSolutionStore, type SolutionStore } from "./solution-store.ts";
 import { createCrmBridge, type CrmBridge, type InsightRecord } from "./crm-bridge.ts";
 import { createOpsBridge, type OpsBridge } from "./ops-bridge.ts";
+import { createPplInspectionBridge, type PplInspectionBridge } from "./ppl-inspection-bridge.ts";
 import { createFbiMetricsBridge, type FbiMetricsBridge } from "./fbi-metrics-bridge.ts";
 
 /**
@@ -117,6 +118,7 @@ export interface LocalRouterDependencies {
   readonly crmBridge?: CrmBridge;
   readonly opsBridge?: OpsBridge;
   readonly fbiMetricsBridge?: FbiMetricsBridge;
+  readonly pplInspectionBridge?: PplInspectionBridge;
 }
 
 function publicInsight(record: InsightRecord) {
@@ -134,6 +136,7 @@ export function createLocalRouter(dependencies: LocalRouterDependencies) {
   const crmBridge = dependencies.crmBridge ?? createCrmBridge();
   const opsBridge = dependencies.opsBridge ?? createOpsBridge();
   const fbiMetricsBridge = dependencies.fbiMetricsBridge ?? createFbiMetricsBridge();
+  const pplInspectionBridge = dependencies.pplInspectionBridge ?? createPplInspectionBridge();
   const allowedOrigins = new Set(dependencies.allowedOrigins ?? DEFAULT_ALLOWED_ORIGINS);
   const allowedHosts = new Set([
     `127.0.0.1:${dependencies.port}`,
@@ -245,6 +248,37 @@ export function createLocalRouter(dependencies: LocalRouterDependencies) {
       const result = await opsBridge.registerWechatLink(url);
       if (!result.ok) return jsonResponse({ ok: false, error: "invalid_url" }, 400);
       return jsonResponse({ ok: true, data: result.link }, 201);
+    }
+
+    if (route === "/local/ppl/inspection" && request.method === "GET") {
+      const inspection = await pplInspectionBridge.inspection();
+      const decisions = await pplInspectionBridge.decisions();
+      return inspection
+        ? jsonResponse({ ok: true, data: inspection, decisions, refresh: pplInspectionBridge.refreshStatus() })
+        : jsonResponse({ ok: false, error: "inspection_unavailable", refresh: pplInspectionBridge.refreshStatus() }, 404);
+    }
+
+    if (route === "/local/ppl/refresh" && (request.method === "GET" || request.method === "POST")) {
+      const status = request.method === "POST" ? pplInspectionBridge.startRefresh() : pplInspectionBridge.refreshStatus();
+      return jsonResponse({ ok: true, data: status }, request.method === "POST" ? 202 : 200);
+    }
+
+    if (route === "/local/ppl/approval" && request.method === "POST") {
+      const body = await readJsonBody(request);
+      const recommendationId = typeof body?.recommendationId === "string" ? body.recommendationId : "";
+      const action = body?.action;
+      if (action !== "approve" && action !== "discard") {
+        return jsonResponse({ ok: false, error: "invalid_request" }, 400);
+      }
+      const note = typeof body?.note === "string" ? body.note : undefined;
+      const result = await pplInspectionBridge.decide(recommendationId, action, note);
+      if (!result.ok) {
+        const status = result.error === "not_found" ? 404
+          : result.error === "already_decided" ? 409
+            : result.error === "blocked_recommendation" ? 422 : 400;
+        return jsonResponse({ ok: false, error: result.error }, status);
+      }
+      return jsonResponse({ ok: true, data: result.decision }, 201);
     }
 
     if (route === "/local/ops/push" && request.method === "POST") {

@@ -19,6 +19,31 @@
 .crm-fbi-fetch .text-button { font-size: 11px; }
 .crm-fbi-fetch .text-button:disabled { color: var(--text-soft); cursor: default; }
 
+.ppl-panel { margin-top: 20px; }
+.ppl-flash { margin: 0 0 8px; padding: 8px 12px; border-radius: var(--radius); color: var(--mint, #7ee2b8); background: rgba(126,226,184,.06); font-size: 11px; }
+.ppl-error { margin: 0 0 10px; }
+.ppl-empty { display: flex; gap: 10px; align-items: center; padding: 18px; color: var(--text-dim); font-size: 12px; }
+.ppl-empty p { margin: 0 0 4px; }
+.ppl-meta { display: flex; align-items: center; gap: 8px; margin: 0; padding: 10px 18px; border-bottom: 1px solid rgba(27,42,47,.6); color: var(--text-dim); font-size: 10px; }
+.ppl-refresh { margin-left: auto; }
+.ppl-list { margin: 0; padding: 4px 0; list-style: none; }
+.ppl-item { display: flex; gap: 12px; align-items: flex-start; padding: 12px 18px; border-bottom: 1px solid rgba(27,42,47,.6); flex-wrap: wrap; }
+.ppl-item__main { display: flex; min-width: 0; flex: 1 1 320px; flex-direction: column; gap: 4px; }
+.ppl-item__main strong { color: var(--text); font-size: 12px; font-weight: 540; }
+.ppl-item__project { color: var(--text-soft); font-size: 11px; }
+.ppl-item__meta { color: var(--text-dim); font-size: 10px; }
+.ppl-item__evidence { color: var(--text-dim); font-size: 10px; }
+.ppl-item__actions { display: flex; align-items: center; gap: 10px; }
+.ppl-confirm { flex: 1 1 100%; padding: 10px 12px; border: 1px solid rgba(240,187,98,.28); border-radius: var(--radius); color: #ebc584; background: rgba(240,187,98,.05); font-size: 11px; }
+.ppl-confirm p { margin: 0 0 6px; }
+.ppl-confirm__fields { color: var(--text-soft); }
+.ppl-confirm > div { display: flex; gap: 14px; }
+.ppl-item--decided { opacity: .7; }
+.ppl-decided { padding: 6px 18px 12px; color: var(--text-dim); font-size: 11px; }
+.ppl-decided summary { cursor: pointer; }
+.ppl-decided .ppl-list { padding: 8px 0 0; }
+.ppl-footnote { display: flex; align-items: center; gap: 6px; margin: 0; padding: 10px 18px; color: var(--text-dim); font-size: 10px; }
+
 .crm-metrics { grid-template-columns: repeat(3, 1fr); }
 
 .crm-cockpit { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 20px; align-items: start; }
@@ -92,6 +117,9 @@
 
 .crm-metrics--four { grid-template-columns: repeat(4, 1fr); }
 .crm-metrics--five { grid-template-columns: repeat(5, 1fr); }
+.crm-metrics--seven { grid-template-columns: repeat(4, 1fr); }
+.crm-metrics--seven .metric-card:nth-child(4n) { border-right: 0; }
+.crm-metrics--seven .metric-card:nth-child(-n+4) { border-bottom: 1px solid var(--line); }
 .crm-metrics .metric-card--warning { background: rgba(240,187,98,.06); }
 .crm-metrics .metric-card--warning > strong { color: var(--amber, #f0bb62); }
 .crm-metrics .metric-card--warning .metric-card__icon { color: #ebc584; }
@@ -138,13 +166,18 @@
 @media (max-width: 820px) {
   .crm-refresh { width: 100%; justify-content: space-between; }
   .crm-metrics--four, .crm-metrics--five { grid-template-columns: repeat(2, 1fr); }
+  .crm-metrics--seven { grid-template-columns: repeat(2, 1fr); }
+  .crm-metrics--seven .metric-card { border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  .crm-metrics--seven .metric-card:nth-child(2n) { border-right: 0; }
+  .crm-metrics--seven .metric-card:nth-child(-n+6) { border-bottom: 1px solid var(--line); }
+  .crm-metrics--seven .metric-card:last-child:nth-child(odd) { grid-column: 1 / -1; }
   .crm-metrics--five .metric-card:nth-child(2n) { border-right: 0; }
   .crm-metrics--five .metric-card:nth-child(-n+4) { border-bottom: 1px solid var(--line); }
   .crm-metrics--five .metric-card:last-child:nth-child(odd) { grid-column: 1 / -1; }
 }
 
 @media (max-width: 560px) {
-  .crm-metrics, .crm-metrics--four, .crm-metrics--five { grid-template-columns: repeat(2, 1fr); }
+  .crm-metrics, .crm-metrics--four, .crm-metrics--five, .crm-metrics--seven { grid-template-columns: repeat(2, 1fr); }
   .crm-metrics .metric-card { min-height: 112px; padding: 16px; border-right: 1px solid var(--line); }
   .crm-metrics .metric-card:last-child:nth-child(odd) { grid-column: 1 / -1; }
   .crm-board { grid-template-columns: 1fr; }

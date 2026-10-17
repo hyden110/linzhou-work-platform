@@ -26,9 +26,15 @@ const RESOURCE_ID_PATTERN = /^\d{1,32}$/;
 const REPORT_URL_PATTERN = /^https:\/\/fbi\.alibaba-inc\.com\/[^\s"'<>\\]{1,400}$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
-/** Fixed question template: the only question this bridge will ever ask FBI. */
+/**
+ * Fixed question template: the only question this bridge will ever ask FBI.
+ * Seat counts are intentionally NOT asked here: the report only carries the
+ * 商机预估口径, which the user has rejected. Active seats live in the separate
+ * 席位看板 report (2000986) whose ACL is still pending, so qoderSeats /
+ * qwenworkSeats stay null until that source is wired in.
+ */
 export const FBI_METRICS_QUESTION = [
-  "请查询这张报表中日数据最新一天（或最新有数据的一天）的核心指标数值。",
+  "请查询这张报表日数据最新一天（或最新有数据的一天）的核心指标。",
   "只输出一个 JSON 对象，不要输出其他任何文字：",
   '{"date":"YYYY-MM-DD","dailyGaap":数值,"validCustomers":数值,"callVolume":数值,"moMRate":数值或null}。',
   "其中 dailyGaap=日GAAP（元），validCustomers=有效客户数，callVolume=当日调用量，moMRate=日GAAP环比昨日比例。数值无法取得时填 null。",
@@ -44,6 +50,8 @@ export interface FbiMetrics {
   readonly validCustomers: number | null;
   readonly callVolume: number | null;
   readonly moMRate: number | null;
+  readonly qoderSeats: number | null;
+  readonly qwenworkSeats: number | null;
   readonly error: string | null;
 }
 
@@ -108,6 +116,9 @@ export function parseMetricsAnswer(answer: string): Partial<FbiMetrics> | undefi
     validCustomers: asNumberOrNull(parsed.validCustomers),
     callVolume: asNumberOrNull(parsed.callVolume),
     moMRate: asNumberOrNull(parsed.moMRate),
+    // 坐席数停用商机预估口径：无论答案里带什么坐席字段，一律置 null（在用席位待 2000986 权限）。
+    qoderSeats: null,
+    qwenworkSeats: null,
   };
 }
 
@@ -128,6 +139,8 @@ function asMetrics(raw: unknown): FbiMetrics | null {
     validCustomers: asNumberOrNull(record.validCustomers),
     callVolume: asNumberOrNull(record.callVolume),
     moMRate: asNumberOrNull(record.moMRate),
+    qoderSeats: asNumberOrNull(record.qoderSeats),
+    qwenworkSeats: asNumberOrNull(record.qwenworkSeats),
     error: typeof record.error === "string" ? record.error : null,
   };
 }
@@ -198,6 +211,8 @@ export function createFbiMetricsBridge(options: FbiMetricsBridgeOptions = {}): F
       validCustomers: null,
       callVolume: null,
       moMRate: null,
+      qoderSeats: null,
+      qwenworkSeats: null,
       error: null,
     });
 
@@ -214,7 +229,7 @@ export function createFbiMetricsBridge(options: FbiMetricsBridgeOptions = {}): F
     if (!answerMessageId) {
       await saveMetrics({
         schemaVersion: 1, state: "failed", generatedAt: startedAt, reportResourceId: resourceId,
-        date: null, dailyGaap: null, validCustomers: null, callVolume: null, moMRate: null, error: "fbi_create_failed",
+        date: null, dailyGaap: null, validCustomers: null, callVolume: null, moMRate: null, qoderSeats: null, qwenworkSeats: null, error: "fbi_create_failed",
       });
       status = { state: "failed", startedAt, finishedAt: iso(), error: "fbi_create_failed" };
       return { ok: true };
@@ -231,7 +246,7 @@ export function createFbiMetricsBridge(options: FbiMetricsBridgeOptions = {}): F
         if (!parsed?.date) {
           await saveMetrics({
             schemaVersion: 1, state: "failed", generatedAt: startedAt, reportResourceId: resourceId,
-            date: null, dailyGaap: null, validCustomers: null, callVolume: null, moMRate: null, error: "fbi_parse_failed",
+            date: null, dailyGaap: null, validCustomers: null, callVolume: null, moMRate: null, qoderSeats: null, qwenworkSeats: null, error: "fbi_parse_failed",
           });
           status = { state: "failed", startedAt, finishedAt: iso(), error: "fbi_parse_failed" };
           return;
@@ -246,6 +261,8 @@ export function createFbiMetricsBridge(options: FbiMetricsBridgeOptions = {}): F
           validCustomers: parsed.validCustomers ?? null,
           callVolume: parsed.callVolume ?? null,
           moMRate: parsed.moMRate ?? null,
+          qoderSeats: null,
+          qwenworkSeats: null,
           error: null,
         });
         status = { state: "succeeded", startedAt, finishedAt: iso(), error: null };
@@ -253,7 +270,7 @@ export function createFbiMetricsBridge(options: FbiMetricsBridgeOptions = {}): F
       .catch(async () => {
         await saveMetrics({
           schemaVersion: 1, state: "failed", generatedAt: startedAt, reportResourceId: resourceId,
-          date: null, dailyGaap: null, validCustomers: null, callVolume: null, moMRate: null, error: "fbi_poll_failed",
+          date: null, dailyGaap: null, validCustomers: null, callVolume: null, moMRate: null, qoderSeats: null, qwenworkSeats: null, error: "fbi_poll_failed",
         }).catch(() => undefined);
         status = { state: "failed", startedAt, finishedAt: iso(), error: "fbi_poll_failed" };
       });

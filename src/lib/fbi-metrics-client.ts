@@ -36,6 +36,8 @@ export interface FbiMetrics {
   readonly validCustomers: number | null;
   readonly callVolume: number | null;
   readonly moMRate: number | null;
+  readonly qoderSeats: number | null;
+  readonly qwenworkSeats: number | null;
   readonly error: string | null;
 }
 
@@ -46,7 +48,7 @@ function isFbiMetrics(value: unknown): value is FbiMetrics {
   if (value.date !== null && (typeof value.date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value.date))) return false;
   if (value.generatedAt !== undefined && typeof value.generatedAt !== "string") return false;
   if (value.error !== null && value.error !== undefined && typeof value.error !== "string") return false;
-  return ["dailyGaap", "validCustomers", "callVolume", "moMRate"].every(
+  return ["dailyGaap", "validCustomers", "callVolume", "moMRate", "qoderSeats", "qwenworkSeats"].every(
     (key) => value[key] === null || value[key] === undefined || typeof value[key] === "number",
   );
 }
