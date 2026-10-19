@@ -843,3 +843,9 @@ select { padding: 6px 28px 6px 9px; }
   .ops-wechat__form svg { display: none; }
   .ops-wechat__form button { width: 100%; }
 }
+
+/* 已发布案例库面板（F3）：只读台账 + 对外分享红线。全部沿用既有 token，无新色值；行内结构复用 .history-item。 */
+.cases-panel { margin-top: 12px; }
+.cases-panel__channel-note { margin: 13px 18px 0; }
+.cases-panel__redline { display: flex; align-items: center; justify-content: flex-end; gap: 5px; margin: 0; padding: 0 18px 15px; color: var(--amber); font-size: 9px; line-height: 1.6; }
+.cases-panel__redline svg { flex: none; }

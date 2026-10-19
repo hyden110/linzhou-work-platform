@@ -21,6 +21,7 @@ import { createPplInspectionBridge, type PplInspectionBridge } from "./ppl-inspe
 import { createFbiMetricsBridge, type FbiMetricsBridge } from "./fbi-metrics-bridge.ts";
 import { createDingtalkBridge, type DingtalkBridge } from "./dingtalk-bridge.ts";
 import { createKbBridge, KB_ID_PATTERN, KbBridgeError, type KbBridge } from "./kb-bridge.ts";
+import { createCasesBridge, type CasesBridge } from "./cases-bridge.ts";
 
 /**
  * Router for the local-only endpoints that back the workbench's "open on this Mac",
@@ -124,6 +125,7 @@ export interface LocalRouterDependencies {
   readonly pplInspectionBridge?: PplInspectionBridge;
   readonly dingtalkBridge?: DingtalkBridge;
   readonly kbBridge?: KbBridge;
+  readonly casesBridge?: CasesBridge;
 }
 
 function publicInsight(record: InsightRecord) {
@@ -144,6 +146,7 @@ export function createLocalRouter(dependencies: LocalRouterDependencies) {
   const pplInspectionBridge = dependencies.pplInspectionBridge ?? createPplInspectionBridge();
   const dingtalkBridge = dependencies.dingtalkBridge ?? createDingtalkBridge();
   const kbBridge = dependencies.kbBridge ?? createKbBridge();
+  const casesBridge = dependencies.casesBridge ?? createCasesBridge();
   const allowedOrigins = new Set(dependencies.allowedOrigins ?? DEFAULT_ALLOWED_ORIGINS);
   const allowedHosts = new Set([
     `127.0.0.1:${dependencies.port}`,
@@ -493,6 +496,16 @@ export function createLocalRouter(dependencies: LocalRouterDependencies) {
           error.status,
           error.status === 429 ? { "Retry-After": "30" } : {},
         );
+      }
+    }
+
+    // 已发布案例库（F3）：只读端点。桥侧负责配置降级与渠道 last-error，
+    // 缺配置如实返回 configured:false，绝不造数据。
+    if (route === "/local/cases" && request.method === "GET") {
+      try {
+        return jsonResponse({ ok: true, data: await casesBridge.snapshot() });
+      } catch {
+        return jsonResponse({ ok: false, error: "cases_unavailable" }, 502);
       }
     }
 

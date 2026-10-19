@@ -1,0 +1,17 @@
+{
+  "_comment": "已发布案例库采集配置（复制为 .local-cache/cases.json 后按本人仓库/桶修改；.local-cache 不入库，本文件只是占位示例）。mode: site=整仓一个案例 / collection=发布根下每个一级目录一个案例；publishDir 缺省时自动判定（有 public/ 用 public，否则仓库根）。exclude 支持 * 通配，匹配案例目录名。aliases / custAliases 的键是归一后的案例键（小写、去分隔符）。数据通道：Code 源需本机 a1 CLI，OSS 源需本机 ossutil CLI，缺哪个哪个渠道如实报错；缺失/坏配置一律 configured:false，绝不造数据。",
+  "code": {
+    "repos": [
+      { "repo": "your-group/delivery-portfolio", "mode": "collection" },
+      { "repo": "your-group/some-deck" }
+    ],
+    "exclude": []
+  },
+  "oss": {
+    "bucket": "your-bucket",
+    "publicBase": "https://your-domain.example.com",
+    "exclude": ["*demo*", "video*"]
+  },
+  "aliases": {},
+  "custAliases": {}
+}

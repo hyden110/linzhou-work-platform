@@ -4,6 +4,7 @@ import { assistantErrorMessage, generateSolution, type AssistantResponse } from 
 import type { SolutionDegradeCode } from "../lib/assistant-contract";
 import type { SolutionVersion } from "../lib/solution-history-client";
 import { useLocalRuntime } from "./LocalRuntimeProvider";
+import { PublishedCasesPanel } from "./PublishedCasesPanel";
 import { SolutionHistoryPanel } from "./SolutionHistoryPanel";
 import { SolutionPlanView } from "./SolutionPlanView";
 import { StatusBadge, ViewHeading, type ViewProps } from "./shared";
@@ -221,6 +222,8 @@ export function AssistantView(_: ViewProps) {
         disabled={generating}
         onOpen={(version, summary) => openVersion(version, summary.customer)}
       />
+
+      <PublishedCasesPanel available={runtime.status.available} />
     </div>
   );
 }
