@@ -1,0 +1,37 @@
+{
+  "sources": [
+    {
+      "id": "aliyundoc",
+      "type": "aliyundoc",
+      "name": "阿里云官方文档",
+      "enabled": true,
+      "site": "cn",
+      "lang": "zh",
+      "products": [
+        { "id": "model-studio", "name": "大模型服务平台百炼" },
+        { "id": "ecs", "name": "云服务器 ECS" },
+        { "id": "oss", "name": "对象存储 OSS" }
+      ]
+    },
+    {
+      "id": "dingtalk-doc",
+      "type": "dingtalk",
+      "name": "钉钉开放文档",
+      "enabled": false,
+      "spaces": []
+    },
+    {
+      "id": "bailian",
+      "type": "bailian",
+      "name": "百炼知识索引",
+      "enabled": false
+    },
+    {
+      "id": "obsidian",
+      "type": "obsidian",
+      "name": "Obsidian 笔记库",
+      "enabled": false,
+      "vault": "/Users/you/Documents/YourVault"
+    }
+  ]
+}

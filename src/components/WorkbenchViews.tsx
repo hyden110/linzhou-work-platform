@@ -15,6 +15,7 @@ import {
   Network,
   RefreshCw,
   Search,
+  Globe,
   ShieldCheck,
   Sparkles,
   TrendingUp,
@@ -26,6 +27,7 @@ import { useCrm } from "./crm/CrmProvider";
 import { REFRESH_ERRORS, SOURCE_LABELS, formatClock, formatDateTime } from "./crm/crm-shared";
 import type { SourceKey, SourceStatus } from "../lib/crm-types";
 import { groupCitationsByDocument, retrieveKnowledge, type RetrievalResponse } from "../lib/retrieval-client";
+import { kbErrorMessage, searchExternalKb, type KbExternalAnswer } from "../lib/kb-client";
 import { DocumentFacetFilter, type DocumentFacets } from "./FacetFilter";
 import { DocumentRow } from "./DocumentRow";
 import { ShelfGrid } from "./ShelfGrid";
@@ -143,9 +145,19 @@ export function OverviewView({ index, documents, onNavigate }: ViewProps) {
   );
 }
 
+type AskScope = "local" | "external";
+
+const ASK_SCOPES: { key: AskScope; label: string; hint: string }[] = [
+  { key: "local", label: "本地证据", hint: "受控知识索引" },
+  { key: "external", label: "外部知识库", hint: "阿里云/钉钉文档" },
+];
+
 export function AskView(_: ViewProps) {
   const [question, setQuestion] = useState("零售客户建设全栈 AI 能力，有哪些可复用案例？");
+  const [scope, setScope] = useState<AskScope>("local");
   const [result, setResult] = useState<RetrievalResponse | null>(null);
+  const [external, setExternal] = useState<KbExternalAnswer | null>(null);
+  const [externalError, setExternalError] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -155,11 +167,22 @@ export function AskView(_: ViewProps) {
     if (!query || loading) return;
     setLoading(true);
     setError("");
+    setExternalError("");
     try {
-      setResult(await retrieveKnowledge({ query, mode: "qa", requestId: crypto.randomUUID() }));
+      if (scope === "external") {
+        // 外部范围只走本地桥 kb 端点，不注入本地索引证据，两范围互不混排。
+        setExternal(await searchExternalKb(query));
+      } else {
+        setResult(await retrieveKnowledge({ query, mode: "qa", requestId: crypto.randomUUID() }));
+      }
     } catch (requestError) {
-      setResult(null);
-      setError(retrievalErrorMessage(requestError));
+      if (scope === "external") {
+        setExternal(null);
+        setExternalError(kbErrorMessage(requestError));
+      } else {
+        setResult(null);
+        setError(retrievalErrorMessage(requestError));
+      }
     } finally {
       setLoading(false);
     }
@@ -171,21 +194,40 @@ export function AskView(_: ViewProps) {
       ? { label: "证据不足", tone: "amber" as const }
       : result
         ? { label: result.diagnosticId ? "AI 调用降级" : "AI 未启用", tone: "amber" as const }
-        : { label: "AI 服务待命", tone: "blue" as const };
+        : external
+          ? { label: external.summary ? "外部知识 AI 摘要" : "外部知识检索完成", tone: "green" as const }
+          : { label: "AI 服务待命", tone: "blue" as const };
   const citationGroups = result ? groupCitationsByDocument(result.citations) : [];
 
   return (
     <div className="view-stack ask-layout">
       <ViewHeading eyebrow="EVIDENCE Q&A / 02" title="AI 问答" description="先检索受控摘要与引用，再由 AI 生成可核验答案；证据不足时明确拒答。" aside={<StatusBadge tone={status.tone}>{status.label}</StatusBadge>} />
       <form className="ask-box" onSubmit={submit}>
-        <Bot size={24} />
+        {scope === "external" ? <Globe size={24} /> : <Bot size={24} />}
         <textarea value={question} onChange={(event) => setQuestion(event.target.value)} aria-label="问题" rows={2} maxLength={500} placeholder="输入客户、场景或技术问题…" />
-        <button type="submit" disabled={!question.trim() || loading}><Sparkles size={16} /> {loading ? "AI 分析中…" : "向 AI 提问"}</button>
+        <button type="submit" disabled={!question.trim() || loading}><Sparkles size={16} /> {loading ? (scope === "external" ? "外部检索中…" : "AI 分析中…") : scope === "external" ? "检索外部知识库" : "向 AI 提问"}</button>
+        <div className="ask-box__scope" role="tablist" aria-label="检索范围">
+          {ASK_SCOPES.map((item) => (
+            <button
+              type="button"
+              key={item.key}
+              role="tab"
+              aria-selected={scope === item.key}
+              className={scope === item.key ? "active" : ""}
+              onClick={() => setScope(item.key)}
+              title={item.hint}
+            >
+              {item.label}
+            </button>
+          ))}
+          <span className="ask-box__scope-note">{scope === "external" ? "检索公网官方文档，经本机桥只读访问" : "仅检索本地受控知识索引"}</span>
+        </div>
         <div className="ask-box__hints"><span>可试：</span>{["制造业智能体案例", "数据中台架构", "云栖 AI 原生应用"].map((hint) => <button type="button" key={hint} onClick={() => setQuestion(hint)}>{hint}</button>)}</div>
       </form>
 
       {error && <div className="answer-warning retrieval-error"><AlertCircle size={16} /> {error}</div>}
-      {result && (
+      {externalError && <div className="answer-warning retrieval-error"><AlertCircle size={16} /> {externalError}</div>}
+      {scope === "local" && result && (
         <section className="answer-grid" aria-live="polite">
           <article className="panel answer-card">
             <div className="answer-card__status"><span className="pulse-dot" /> {result.status === "answered" ? "AI 证据回答" : "安全降级"}<small>{result.vectorSearch === "semantic" ? "语义 + 关键词检索" : "仅关键词检索"} · 引用约束</small></div>
@@ -210,6 +252,35 @@ export function AskView(_: ViewProps) {
                   {group.items.map(({ number, citation }) => (
                     <p key={citation.referenceId}>{group.items.length > 1 && <b>[{number}] </b>}{citation.locator.kind} {citation.locator.value} · {citation.text}</p>
                   ))}
+                </div>
+                <Link2 size={15} />
+              </article>
+            ))}
+          </aside>
+        </section>
+      )}
+      {scope === "external" && external && (
+        <section className="answer-grid" aria-live="polite">
+          <article className="panel answer-card">
+            <div className="answer-card__status"><span className="pulse-dot" /> 外部知识检索<small>统一知识检索 · 本机桥只读访问</small></div>
+            {external.summary ? (
+              <><h2>AI 摘要</h2><p className="answer-text">{external.summary}</p></>
+            ) : (
+              <><h2>外部检索结果</h2><p>本次未生成 AI 摘要，以下为按相关度排序的原始命中，可点击标题查看原文。</p></>
+            )}
+          </article>
+          <aside className="panel citations-panel">
+            <div className="panel__header"><div><span className="eyebrow">EXTERNAL SOURCES</span><h2>外部命中</h2></div><span>{external.hits.length} 条</span></div>
+            {external.hits.length === 0 && <div className="citation"><span>—</span><div><strong>没有命中外部知识</strong><small>可换关键词重试，或检查本机 .local-cache/kb.json 来源配置</small></div></div>}
+            {external.hits.map((hit) => (
+              <article className="citation" key={`${hit.sourceId}:${hit.id}`}>
+                <span>{hit.rank}</span>
+                <div>
+                  {hit.url
+                    ? <strong><a className="citation__link" href={hit.url} target="_blank" rel="noreferrer">{hit.title}</a></strong>
+                    : <strong>{hit.title}</strong>}
+                  <small>{[hit.space, hit.path, hit.sourceName].filter(Boolean).join(" / ")}</small>
+                  {hit.snippet && <p>{hit.snippet}</p>}
                 </div>
                 <Link2 size={15} />
               </article>

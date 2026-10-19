@@ -20,6 +20,7 @@ import { createOpsBridge, type OpsBridge } from "./ops-bridge.ts";
 import { createPplInspectionBridge, type PplInspectionBridge } from "./ppl-inspection-bridge.ts";
 import { createFbiMetricsBridge, type FbiMetricsBridge } from "./fbi-metrics-bridge.ts";
 import { createDingtalkBridge, type DingtalkBridge } from "./dingtalk-bridge.ts";
+import { createKbBridge, KB_ID_PATTERN, KbBridgeError, type KbBridge } from "./kb-bridge.ts";
 
 /**
  * Router for the local-only endpoints that back the workbench's "open on this Mac",
@@ -91,12 +92,12 @@ function isTrustedHost(request: Request, allowedHosts: ReadonlySet<string>): boo
   return host !== null && allowedHosts.has(host.toLowerCase());
 }
 
-async function readJsonBody(request: Request): Promise<Record<string, unknown> | undefined> {
+async function readJsonBody(request: Request, maxBytes: number = MAX_BODY_BYTES): Promise<Record<string, unknown> | undefined> {
   if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/json")) return undefined;
-  if (Number(request.headers.get("content-length") ?? 0) > MAX_BODY_BYTES) return undefined;
+  if (Number(request.headers.get("content-length") ?? 0) > maxBytes) return undefined;
   try {
     const bytes = new Uint8Array(await request.arrayBuffer());
-    if (bytes.byteLength > MAX_BODY_BYTES) return undefined;
+    if (bytes.byteLength > maxBytes) return undefined;
     const parsed: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
     return parsed && typeof parsed === "object" && !Array.isArray(parsed)
       ? (parsed as Record<string, unknown>)
@@ -122,6 +123,7 @@ export interface LocalRouterDependencies {
   readonly fbiMetricsBridge?: FbiMetricsBridge;
   readonly pplInspectionBridge?: PplInspectionBridge;
   readonly dingtalkBridge?: DingtalkBridge;
+  readonly kbBridge?: KbBridge;
 }
 
 function publicInsight(record: InsightRecord) {
@@ -141,6 +143,7 @@ export function createLocalRouter(dependencies: LocalRouterDependencies) {
   const fbiMetricsBridge = dependencies.fbiMetricsBridge ?? createFbiMetricsBridge();
   const pplInspectionBridge = dependencies.pplInspectionBridge ?? createPplInspectionBridge();
   const dingtalkBridge = dependencies.dingtalkBridge ?? createDingtalkBridge();
+  const kbBridge = dependencies.kbBridge ?? createKbBridge();
   const allowedOrigins = new Set(dependencies.allowedOrigins ?? DEFAULT_ALLOWED_ORIGINS);
   const allowedHosts = new Set([
     `127.0.0.1:${dependencies.port}`,
@@ -346,6 +349,54 @@ export function createLocalRouter(dependencies: LocalRouterDependencies) {
       return data
         ? jsonResponse({ ok: true, data })
         : jsonResponse({ ok: false, error: "message_cache_unavailable" }, 404);
+    }
+
+    // 统一知识检索（F2）：全部只读端点。桥侧负责多源扇出、RRF 融合与摘要降级；
+    // 绝对路径不出桥，摘要么输入只含标题/路径/摘要片段。
+    if (route === "/local/kb/sources" && request.method === "GET") {
+      return jsonResponse({ ok: true, data: { sources: await kbBridge.sources() } });
+    }
+
+    if (route === "/local/kb/search" && request.method === "GET") {
+      const query = (url.searchParams.get("q") ?? "").trim();
+      if (!query || query.length > 200) return jsonResponse({ ok: false, error: "invalid_request" }, 400);
+      const onlyParam = url.searchParams.get("sources");
+      const only = onlyParam !== null ? onlyParam.split(",").filter((id) => KB_ID_PATTERN.test(id)) : undefined;
+      try {
+        const outcome = await kbBridge.search(query, only);
+        return jsonResponse({ ok: true, data: outcome });
+      } catch (error) {
+        if (!(error instanceof KbBridgeError)) throw error;
+        return jsonResponse({ ok: false, error: "kb_unavailable" }, 502);
+      }
+    }
+
+    if (route === "/local/kb/read" && request.method === "GET") {
+      const sourceId = url.searchParams.get("source") ?? "";
+      const id = url.searchParams.get("id") ?? "";
+      if (!sourceId || !id || !KB_ID_PATTERN.test(sourceId)) {
+        return jsonResponse({ ok: false, error: "invalid_request" }, 400);
+      }
+      try {
+        return jsonResponse({ ok: true, data: await kbBridge.read(sourceId, id) });
+      } catch (error) {
+        if (!(error instanceof KbBridgeError)) throw error;
+        const status = error.code === "source_not_found" ? 404 : 502;
+        return jsonResponse({ ok: false, error: error.code }, status);
+      }
+    }
+
+    if (route === "/local/kb/summary" && request.method === "POST") {
+      const body = await readJsonBody(request, 16 * 1024);
+      const query = typeof body?.q === "string" ? body.q.trim().slice(0, 200) : "";
+      const hits = Array.isArray(body?.hits) ? body.hits : [];
+      if (!query || !hits.length) return jsonResponse({ ok: false, error: "invalid_request" }, 400);
+      try {
+        return jsonResponse({ ok: true, data: await kbBridge.summary(query, hits) });
+      } catch (error) {
+        if (!(error instanceof KbBridgeError)) throw error;
+        return jsonResponse({ ok: false, error: error.code }, 502);
+      }
     }
 
     if (route === "/local/ops/push" && request.method === "POST") {
