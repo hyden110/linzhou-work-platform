@@ -7,6 +7,7 @@ import { CrmProvider } from "./components/crm/CrmProvider";
 import { CustomersView } from "./components/crm/CustomersView";
 import { DingtalkView } from "./components/crm/DingtalkView";
 import { PplFollowupView } from "./components/crm/PplFollowupView";
+import { LeadsView } from "./components/crm/LeadsView";
 import { KnowledgeMapView } from "./components/KnowledgeMapView";
 import { Sidebar } from "./components/Sidebar";
 import { OpsProvider } from "./components/ops/OpsProvider";
@@ -32,6 +33,7 @@ const viewTitles: Record<ViewId, string> = {
   customers: "客户盘面",
   dingtalk: "钉群盘面",
   lifecycle: "PPL 跟进",
+  leads: "拓新雷达",
   overview: "总览",
   ask: "AI 问答",
   map: "知识地图",
@@ -192,6 +194,7 @@ function Workbench() {
     customers: <CustomersView />,
     dingtalk: <DingtalkView />,
     lifecycle: <PplFollowupView />,
+    leads: <LeadsView />,
     overview: <OverviewView {...commonProps} />,
     ask: <AskView {...commonProps} />,
     map: <KnowledgeMapView {...commonProps} initialShelf={mapShelf} initialGroup={mapGroup} />,

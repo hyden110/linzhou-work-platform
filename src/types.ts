@@ -3,6 +3,7 @@ export type ViewId =
   | "customers"
   | "dingtalk"
   | "lifecycle"
+  | "leads"
   | "overview"
   | "ask"
   | "map"

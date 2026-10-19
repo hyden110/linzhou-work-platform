@@ -1,0 +1,9 @@
+{
+  "$comment": "拓新雷达（React 工作台 F5）的配置模板。复制为 .local-cache/leads.json 后填入自己 Base / Table / View 的 ID（在钉钉 AI 表格链接里：/i/nodes/<baseId>?sheetId=<tableId>&viewId=<viewId>）。字段按名称映射，无需填字段 ID；电话/邮箱/法定代表人等联系人字段白名单外，物理不入快照。priorityProvinces = 优先拓新区域（命中行带优先省徽标）；radarCmd = 雷达采集命令（仅页面提示文案，本批不实现雷达采集）。工作台只读拉取、绝不回写 AI 表格；拉取需本机 dws 已安装并完成 dws auth login。此文件为个人数据，不入仓库（.local-cache/ 已 gitignore）。",
+  "baseId": "",
+  "tableId": "",
+  "viewId": "",
+  "tableName": "拓新企业清单",
+  "priorityProvinces": ["北京", "山东", "河南", "山西", "河北"],
+  "radarCmd": ""
+}

@@ -11,6 +11,7 @@ import {
   Network,
   PanelLeftClose,
   PanelLeftOpen,
+  Radar,
   RefreshCw,
   Sparkles,
   Users,
@@ -39,6 +40,7 @@ const navigation: NavigationGroup[] = [
       { id: "customers", label: "客户盘面", icon: Users },
       { id: "dingtalk", label: "钉群盘面", icon: MessagesSquare },
       { id: "lifecycle", label: "PPL 跟进", icon: Workflow },
+      { id: "leads", label: "拓新雷达", icon: Radar },
     ],
   },
   {

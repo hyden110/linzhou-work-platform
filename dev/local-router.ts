@@ -23,6 +23,7 @@ import { createDingtalkBridge, type DingtalkBridge } from "./dingtalk-bridge.ts"
 import { createKbBridge, KB_ID_PATTERN, KbBridgeError, type KbBridge } from "./kb-bridge.ts";
 import { createCasesBridge, type CasesBridge } from "./cases-bridge.ts";
 import { createHealthBridge, type HealthBridge } from "./health-bridge.ts";
+import { createLeadsBridge, LeadsSyncError, type LeadsBridge } from "./leads-bridge.ts";
 
 /**
  * Router for the local-only endpoints that back the workbench's "open on this Mac",
@@ -128,6 +129,7 @@ export interface LocalRouterDependencies {
   readonly kbBridge?: KbBridge;
   readonly casesBridge?: CasesBridge;
   readonly healthBridge?: HealthBridge;
+  readonly leadsBridge?: LeadsBridge;
 }
 
 function publicInsight(record: InsightRecord) {
@@ -157,6 +159,7 @@ export function createLocalRouter(dependencies: LocalRouterDependencies) {
     kbConfig: kbBridge.config,
     opsDigest: opsBridge.digest,
   });
+  const leadsBridge = dependencies.leadsBridge ?? createLeadsBridge();
   const allowedOrigins = new Set(dependencies.allowedOrigins ?? DEFAULT_ALLOWED_ORIGINS);
   const allowedHosts = new Set([
     `127.0.0.1:${dependencies.port}`,
@@ -527,6 +530,33 @@ export function createLocalRouter(dependencies: LocalRouterDependencies) {
         return jsonResponse({ ok: true, data: await healthBridge.snapshot() });
       } catch {
         return jsonResponse({ ok: false, error: "health_unavailable" }, 502);
+      }
+    }
+
+    // 拓新雷达（F5）：钉钉 AI 表格「拓新企业清单」只读桥。GET 读本机快照；
+    // POST /refresh 显式触发 dws 拉取（12h TTL 低成本口径，无自动轮询），绝不回写。
+    // 未配置 → 400 leads_unconfigured；护栏拒绝（表名漂移/字段漂移/空表/腰斩/分页不完整）
+    // → 409 带稳定错误码且旧快照原样保留；dws 缺失/失败 → 502 leads_unavailable。
+    if (route === "/local/leads" && request.method === "GET") {
+      try {
+        return jsonResponse({ ok: true, data: await leadsBridge.snapshot() });
+      } catch {
+        return jsonResponse({ ok: false, error: "leads_unavailable" }, 502);
+      }
+    }
+
+    if (route === "/local/leads/refresh" && request.method === "POST") {
+      try {
+        return jsonResponse({ ok: true, data: await leadsBridge.refresh() });
+      } catch (error) {
+        // 评审 P3-1：非 LeadsSyncError（如快照写的原生 fs 错误）映射 502
+        // leads_unavailable，避免落 500 被客户端误读为「本地桥未启动」。
+        if (!(error instanceof LeadsSyncError)) {
+          return jsonResponse({ ok: false, error: "leads_unavailable" }, 502);
+        }
+        const status = error.code === "leads_unconfigured" ? 400
+          : error.code === "leads_unavailable" ? 502 : 409;
+        return jsonResponse({ ok: false, error: error.code, message: error.message }, status);
       }
     }
 
