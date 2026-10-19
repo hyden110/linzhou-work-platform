@@ -330,12 +330,16 @@ test("summary success path: qodercli JSON parsed, single-flight enforced", async
       sources: [{ id: "src-a", type: "dingtalk", name: "甲科技知识库", enabled: true, spaces: [], enterprise: false }],
       summary: { model: "Auto", topN: 8 },
     });
-    let release: (() => void) = () => {};
+    // release 句柄在测试启动时即绑定到 resolved 前的 deferred：无论胜者何时到达
+    // runner（全量并行下 fs 可能很慢），release() 都有效——早前「runner 启动时才
+    // 赋值 release」的写法在 spin 上限耗尽后会挂死（F7 评审 P3-1 二次返工教训）。
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
     const calls: { file: string; args: readonly string[]; stdin?: string; timeoutMs: number }[] = [];
     const runner: KbCommandRunner = async (file, args, options) => {
       calls.push({ file, args, stdin: options.stdin, timeoutMs: options.timeoutMs });
       if (calls.length === 1) {
-        await new Promise<void>((resolve) => { release = resolve; });
+        await blocked;
       }
       return { code: 0, stdout: JSON.stringify({ result: "按 [1] 的方案落地。", duration_ms: 42, total_credits: 1 }) };
     };
@@ -357,9 +361,14 @@ test("summary success path: qodercli JSON parsed, single-flight enforced", async
       );
     const first = settle(bridge.summary("全栈 AI 怎么建？", hitInput));
     const second = settle(bridge.summary("第二个问题", hitInput));
-    for (let spins = 0; spins < 2500 && calls.length < 1; spins += 1) {
+    // 等胜者真实进入 CLI（阻塞在 blocked 上）；不设过短上限——单飞若损坏
+    // （两侧都进 CLI），calls.length 会 ≥1 使循环退出并走断言失败，绝不挂死。
+    let spins = 0;
+    while (calls.length < 1 && spins < 15000) {
       await new Promise<void>((resolve) => { setTimeout(resolve, 2); });
+      spins += 1;
     }
+    assert.ok(calls.length >= 1, "并发期间应有恰一个调用真实进入 CLI（15s 内）");
     release();
     const settled = await Promise.all([first, second]);
     const rejected = settled.filter((r) => !r.ok);
