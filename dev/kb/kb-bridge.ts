@@ -155,7 +155,10 @@ export function createKbBridge(options: KbBridgeOptions = {}): KbBridge {
   const readTimeoutMs = options.readTimeoutMs ?? READ_TIMEOUT_MS;
   const summaryTimeoutMs = options.summaryTimeoutMs ?? SUMMARY_TIMEOUT_MS;
 
-  const summarizeWith = (model: string) => createKbSummarizer({ run, model, timeoutMs: summaryTimeoutMs });
+  /* 单飞闸门桥级共享：桥内同一时刻只允许一个总结在生成（跨 model 也互斥）；
+     测试各建各桥互不串扰。 */
+  const summaryGate = { running: false };
+  const summarizeWith = (model: string) => createKbSummarizer({ run, model, timeoutMs: summaryTimeoutMs, gate: summaryGate });
 
   const loadSources = async (): Promise<KbSource[]> => {
     const config = await loadKbConfig(configPath);

@@ -19,9 +19,6 @@ export const SUMMARY_PROMPT_HEADER = [
   "不要编造片段之外的细节，不要输出与问题无关的内容。",
 ].join("\n");
 
-/** 单飞：同一时刻只允许一个总结在生成。 */
-let running = false;
-
 export interface KbSummarizer {
   readonly summarize: (query: string, hits: readonly KbSummaryHit[]) => Promise<KbSummaryResult>;
 }
@@ -39,15 +36,25 @@ export function buildSummaryPrompt(query: string, hits: readonly KbSummaryHit[])
   return `${SUMMARY_PROMPT_HEADER}\n\n问题：${trunc(query, 200)}\n\n检索片段：\n\n${blocks.join("\n\n")}`;
 }
 
-export function createKbSummarizer(context: { run: KbAdapterContext["run"]; model: string; timeoutMs: number }): KbSummarizer {
-  const { run, model, timeoutMs } = context;
+/**
+ * 单飞闸门由持有方（kb-bridge）注入：同一 bridge 共享一个闸门 → 桥内同一时刻
+ * 只允许一个总结在生成；测试各建各桥互不串扰（原模块级标志会让整包测试偶发
+ * 「上一个总结还在生成」）。生产单路由进程恰一个 kbBridge，语义等价。
+ */
+export function createKbSummarizer(context: {
+  run: KbAdapterContext["run"];
+  model: string;
+  timeoutMs: number;
+  gate: { running: boolean };
+}): KbSummarizer {
+  const { run, model, timeoutMs, gate } = context;
 
   return {
     summarize: async (query, hits) => {
-      if (running) throw new Error("上一个总结还在生成");
+      if (gate.running) throw new Error("上一个总结还在生成");
       const args = ["-p", "--tools", "", "-o", "json"];
       if (model && model !== "Auto" && /^[\w .()-]{1,80}$/.test(model)) args.push("-m", model);
-      running = true;
+      gate.running = true;
       try {
         const payload = await runCliJson(
           run,
@@ -74,7 +81,7 @@ export function createKbSummarizer(context: { run: KbAdapterContext["run"]; mode
           degraded: false as const,
         };
       } finally {
-        running = false;
+        gate.running = false;
       }
     },
   };
