@@ -26,6 +26,7 @@ import { createHealthBridge, type HealthBridge } from "./health-bridge.ts";
 import { createLeadsBridge, LeadsSyncError, type LeadsBridge } from "./leads-bridge.ts";
 import { createReportBridge, ReportBridgeError, type ReportBridge } from "./report-bridge.ts";
 import { createNotifyBridge, NotifyBridgeError, type NotifyBridge } from "./notify-bridge.ts";
+import { createAgentsBridge, AgentsBridgeError, type AgentsBridge } from "./agents-bridge.ts";
 
 /**
  * Router for the local-only endpoints that back the workbench's "open on this Mac",
@@ -134,6 +135,7 @@ export interface LocalRouterDependencies {
   readonly leadsBridge?: LeadsBridge;
   readonly reportBridge?: ReportBridge;
   readonly notifyBridge?: NotifyBridge;
+  readonly agentsBridge?: AgentsBridge;
 }
 
 /** 稳定错误码 → HTTP 状态映射（report）：unconfigured=400（含参数/白名单拒绝），其余 502。 */
@@ -154,6 +156,15 @@ function notifyFailure(error: unknown): Response {
     return jsonResponse({ ok: false, error: code, message: error.message }, status);
   }
   return jsonResponse({ ok: false, error: "notify_unavailable" }, 502);
+}
+
+/** 稳定错误码 → HTTP 状态映射（agents）：unconfigured=400，其余 502；未知异常兜底 502。 */
+function agentsFailure(error: unknown): Response {
+  if (error instanceof AgentsBridgeError) {
+    const status = error.code === "agents_unconfigured" ? 400 : 502;
+    return jsonResponse({ ok: false, error: error.code, message: error.message }, status);
+  }
+  return jsonResponse({ ok: false, error: "agents_unavailable" }, 502);
 }
 
 function publicInsight(record: InsightRecord) {
@@ -186,6 +197,7 @@ export function createLocalRouter(dependencies: LocalRouterDependencies) {
   const leadsBridge = dependencies.leadsBridge ?? createLeadsBridge();
   const reportBridge = dependencies.reportBridge ?? createReportBridge();
   const notifyBridge = dependencies.notifyBridge ?? createNotifyBridge();
+  const agentsBridge = dependencies.agentsBridge ?? createAgentsBridge();
   const allowedOrigins = new Set(dependencies.allowedOrigins ?? DEFAULT_ALLOWED_ORIGINS);
   const allowedHosts = new Set([
     `127.0.0.1:${dependencies.port}`,
@@ -653,6 +665,33 @@ export function createLocalRouter(dependencies: LocalRouterDependencies) {
         return jsonResponse({ ok: true, data: await notifyBridge.enqueueTest() });
       } catch (error) {
         return notifyFailure(error);
+      }
+    }
+
+    // 数字员工（F7）：三块合一的全只读视图——QoderWake daemon 健康（本机 GET /api/health
+    // 探测，显式 ≤5s）、AgentLoop 观测状态（凭据只读存在性与掩码，绝不透出明文）、
+    // 微信办公快照（统计白名单投影）。无写端点：凭据管理 / 出票 / 绑定管理不做，POST 落 405。
+    if (route === "/local/agents/state" && request.method === "GET") {
+      try {
+        return jsonResponse({ ok: true, data: await agentsBridge.state() });
+      } catch (error) {
+        return agentsFailure(error);
+      }
+    }
+
+    if (route === "/local/agents/agentloop" && request.method === "GET") {
+      try {
+        return jsonResponse({ ok: true, data: await agentsBridge.agentloop() });
+      } catch (error) {
+        return agentsFailure(error);
+      }
+    }
+
+    if (route === "/local/agents/wechat" && request.method === "GET") {
+      try {
+        return jsonResponse({ ok: true, data: await agentsBridge.wechat() });
+      } catch (error) {
+        return agentsFailure(error);
       }
     }
 

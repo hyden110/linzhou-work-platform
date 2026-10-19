@@ -13,7 +13,8 @@ export type ViewId =
   | "sync"
   | "ops"
   | "report"
-  | "inbox";
+  | "inbox"
+  | "agents";
 
 export interface CountRow {
   name: string;

@@ -1,0 +1,22 @@
+{
+  "$comment": "数字员工（React 工作台 F7）的配置模板。复制为 .local-cache/agents.json 后按段填入：wake 段 = QoderWake daemon 端口文件路径（daemonPortPath，默认 ~/.qoderwake/run/daemon.port 可留空）与 ECS 网关入口 endpoints[]（id/t/url，只存 URL 与条目名，绝不存 Basic Auth 凭据，未配置则 ECS 入口不渲染）；agentloop 段 = 凭据探测方式 statusSource（kind=\"json-file\" + path + field：本台只读该字段的存在性并出掩码，绝不读取/透出 AK/SK 明文；凭据配置与 CreateTicket 出票待授权，本台未开通）与可选 views 视图清单（不配则回落扫描 pilot 上报目标）；wechat 段 = 微信办公快照路径 snapshotPath（默认空：由静态库本机常驻同步生成其 data/wechat.json 后填绝对路径；本台只投影统计白名单，绝不读消息表、不做解密/同步）。本台全只读：唯一网络动作是本机 daemon 的 GET /api/health 健康探测；Console 等入口一律新窗口外链（内嵌 Console 有登录重定向死循环），无 iframe。此文件为个人数据，不入仓库（.local-cache/ 已 gitignore）。",
+  "wake": {
+    "daemonPortPath": "",
+    "endpoints": [
+      { "id": "", "t": "", "url": "" }
+    ]
+  },
+  "agentloop": {
+    "statusSource": {
+      "kind": "",
+      "path": "",
+      "field": ""
+    },
+    "views": [
+      { "id": "", "t": "", "sub": "", "project": "", "logstore": "", "region": "" }
+    ]
+  },
+  "wechat": {
+    "snapshotPath": ""
+  }
+}

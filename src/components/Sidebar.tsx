@@ -4,6 +4,7 @@ import {
   Bot,
   CalendarDays,
   Cloud,
+  Cpu,
   Database,
   Gauge,
   Inbox,
@@ -63,6 +64,12 @@ const navigation: NavigationGroup[] = [
     eyebrow: "GROWTH OPS",
     items: [
       { id: "ops", label: "运营推广", icon: Megaphone },
+    ],
+  },
+  {
+    eyebrow: "AGENT OPS",
+    items: [
+      { id: "agents", label: "数字员工", icon: Cpu },
     ],
   },
 ];

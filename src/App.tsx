@@ -12,6 +12,7 @@ import { InboxView } from "./components/InboxView";
 import { NotifyBell } from "./components/NotifyBell";
 import { KnowledgeMapView } from "./components/KnowledgeMapView";
 import { ReportsView } from "./components/report/ReportsView";
+import { AgentsView } from "./components/agents/AgentsView";
 import { Sidebar } from "./components/Sidebar";
 import { OpsProvider } from "./components/ops/OpsProvider";
 import { OpsView } from "./components/ops/OpsView";
@@ -47,6 +48,7 @@ const viewTitles: Record<ViewId, string> = {
   ops: "运营推广",
   report: "日周报",
   inbox: "消息中心",
+  agents: "数字员工",
 };
 
 const EMPTY_DOCUMENTS: KnowledgeDocument[] = [];
@@ -210,6 +212,7 @@ function Workbench() {
     ops: <OpsView />,
     report: <ReportsView />,
     inbox: <InboxView />,
+    agents: <AgentsView />,
   }[activeView];
 
   return (
