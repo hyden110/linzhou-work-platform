@@ -6,6 +6,7 @@ import type { GroupItem } from "../../lib/crm-types";
 import { ViewHeading } from "../shared";
 import { useCrm } from "./CrmProvider";
 import { CrmGate, MetricCard, RefreshControl, SourceBanner, formatDateTime, formatGaap } from "./crm-shared";
+import { DailySummaryPanel } from "./DailySummaryPanel";
 
 const PANEL_LIMIT = 30;
 
@@ -83,6 +84,8 @@ export function DingtalkView() {
         {snapshot && view && (
           <>
             <SourceBanner keys={["groups", "mentions", "unread", "customers"]} />
+
+            <DailySummaryPanel />
 
             <section className="metric-grid crm-metrics crm-metrics--four" aria-label="钉群概况">
               <MetricCard

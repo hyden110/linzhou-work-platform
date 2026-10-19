@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AtSign, Bot, CalendarClock, CircleAlert, CircleDollarSign, ListTodo, Users } from "lucide-react";
+import { AtSign, Bot, CalendarClock, CheckCircle2, CircleAlert, CircleDollarSign, ListTodo, Plus, Users } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { actionQueue, parseLocalTime, startOfDay, type ActionItem, type Urgency } from "../../lib/crm-model";
+import type { TodoItem } from "../../lib/crm-types";
 import { fetchFbiMetrics, fbiMetricsErrorMessage, startFbiMetrics, type FbiMetrics } from "../../lib/fbi-metrics-client";
 import { StatusBadge, ViewHeading } from "../shared";
 import { useCrm } from "./CrmProvider";
 import { CrmGate, RefreshControl, SourceBanner, formatClock, formatDateTime, formatGaap } from "./crm-shared";
 import { PplInspectionPanel } from "./PplInspectionPanel";
+import { TodoComposeDialog } from "./TodoComposeDialog";
 
 const DAY_MS = 86_400_000;
 const QUEUE_PREVIEW = 12;
@@ -121,10 +123,38 @@ function ActionRow({ item }: { item: ActionItem }) {
   );
 }
 
+function todoBadge(todo: TodoItem, now: number, todayEnd: number): { label: string; tone: "amber" | "green" | "blue" | "muted" } {
+  if (todo.done === true) return { label: "已完成", tone: "muted" };
+  if (todo.dueAt === null) return { label: todo.priority >= 30 ? "高优先级 · 无截止" : "无截止", tone: "muted" };
+  if (todo.dueAt < now) return { label: "已逾期", tone: "amber" };
+  if (todo.dueAt < todayEnd) return { label: `今天 ${formatClock(todo.dueAt)}`, tone: "green" };
+  return { label: formatDateTime(todo.dueAt), tone: "blue" };
+}
+
+function TodoRow({ todo, now, todayEnd }: { todo: TodoItem; now: number; todayEnd: number }) {
+  const badge = todoBadge(todo, now, todayEnd);
+  const detail = [
+    todo.priority >= 30 ? "高优先级" : "普通优先级",
+    todo.done === true && todo.finishedAt ? `完成于 ${formatDateTime(todo.finishedAt)}` : null,
+  ].filter(Boolean).join(" · ");
+  return (
+    <li className={`crm-todo ${todo.done === true ? "is-done" : ""}`}>
+      <ListTodo size={15} />
+      <div>
+        <strong>{todo.title}</strong>
+        <span>{detail}</span>
+      </div>
+      <time>{todo.dueAt === null ? "无截止" : formatDateTime(todo.dueAt)}</time>
+      <StatusBadge tone={badge.tone}>{badge.label}</StatusBadge>
+    </li>
+  );
+}
+
 export function CockpitView() {
   const { snapshot } = useCrm();
   const now = useNow();
   const [expanded, setExpanded] = useState(false);
+  const [composeOpen, setComposeOpen] = useState(false);
   const fbi = useFbiMetrics();
 
   const model = useMemo(() => {
@@ -136,9 +166,24 @@ export function CockpitView() {
       .filter((row) => row.start !== null && row.start >= todayStart && row.start < todayEnd)
       .sort((a, b) => (a.start ?? 0) - (b.start ?? 0));
     const queue = actionQueue(snapshot, now);
+    const pendingTodos = snapshot.todos
+      .filter((todo) => todo.done !== true)
+      .sort((a, b) =>
+        (a.dueAt ?? Number.MAX_SAFE_INTEGER) - (b.dueAt ?? Number.MAX_SAFE_INTEGER)
+        || b.priority - a.priority
+        || a.title.localeCompare(b.title, "zh-CN"));
+    const doneTodos = snapshot.todos
+      .filter((todo) => todo.done === true)
+      .sort((a, b) =>
+        (b.finishedAt ?? b.dueAt ?? 0) - (a.finishedAt ?? a.dueAt ?? 0)
+        || a.title.localeCompare(b.title, "zh-CN"));
     return {
+      todayStart,
+      todayEnd,
       todayAgenda,
       queue,
+      pendingTodos,
+      doneTodos,
       overdue: queue.filter((item) => item.urgency === "overdue" && item.kind === "todo").length,
       gaap: snapshot.customers.reduce((sum, customer) => sum + (customer.lastMonthGaap ?? 0), 0),
     };
@@ -146,6 +191,14 @@ export function CockpitView() {
 
   const customersReady = snapshot?.sources.customers?.status === "ok";
   const visibleQueue = model ? (expanded ? model.queue : model.queue.slice(0, QUEUE_PREVIEW)) : [];
+  const todoSource = snapshot?.sources.todos;
+  const todoWarning = todoSource?.complete === false
+    ? (todoSource.pendingTruncated || todoSource.doneTruncated
+      ? `待办列表可能不完整：单页 ${todoSource.listLimit ?? 200} 条已达上限，仅展示已读取部分。`
+      : (todoSource.detailsFailed ?? 0) > 0
+        ? `有 ${todoSource.detailsFailed} 条已完成待办的详情读取失败，完成状态可能缺失；下次刷新会重试。`
+        : "待办列表可能不完整，仅展示已读取部分。")
+    : null;
 
   // FBI 卡如实态：报表里没有「客户维度 Agent 数量」和「MaaS 归因收入」，
   // 这里按报表真实指标展示（有效客户数 / 日 GAAP 环比），差异在交付报告里说明。
@@ -168,7 +221,7 @@ export function CockpitView() {
             <SourceBanner keys={["agenda", "todos", "mentions", "customers"]} />
             <section className="metric-grid crm-metrics crm-metrics--seven" aria-label="关键指标">
               <Metric icon={CalendarClock} label="今日日程" value={String(model.todayAgenda.length)} note={`剩余 ${model.todayAgenda.filter((row) => (row.end ?? row.start ?? 0) >= now).length} 场`} primary />
-              <Metric icon={CircleAlert} label="逾期待办" value={String(model.overdue)} note={`共 ${snapshot.todos.length} 条未完成`} />
+              <Metric icon={CircleAlert} label="逾期待办" value={String(model.overdue)} note={`共 ${model.pendingTodos.length} 条未完成 · ${model.doneTodos.length} 条已完成`} />
               <Metric icon={Users} label="客户 / 上月 GAAP" value={customersReady ? String(snapshot.customers.length) : "—"} note={customersReady ? `GAAP ${formatGaap(model.gaap)}` : "等待鲲鹏登录"} />
               <Metric
                 icon={Bot}
@@ -247,10 +300,48 @@ export function CockpitView() {
               </div>
             </div>
 
+            <section className="panel crm-todos">
+              <header className="panel__header">
+                <div><span className="eyebrow">TODOS</span><h2>待办</h2></div>
+                <div className="crm-todos__tools">
+                  <span>{model.pendingTodos.length} 条未完成 · {model.doneTodos.length} 条已完成</span>
+                  <button className="primary-button" onClick={() => setComposeOpen(true)}>
+                    <Plus size={14} />新建待办
+                  </button>
+                </div>
+              </header>
+              {todoWarning && (
+                <p className="crm-todos__warning" role="status">
+                  <CircleAlert size={13} />
+                  {todoWarning}
+                </p>
+              )}
+              {model.pendingTodos.length === 0
+                ? <p className="crm-muted">没有未完成的待办。</p>
+                : (
+                  <ul className="crm-list">
+                    {model.pendingTodos.map((todo) => (
+                      <TodoRow key={todo.id} todo={todo} now={now} todayEnd={model.todayEnd} />
+                    ))}
+                  </ul>
+                )}
+              {model.doneTodos.length > 0 && (
+                <details className="crm-todos__done">
+                  <summary><CheckCircle2 size={13} />已完成 {model.doneTodos.length} 条</summary>
+                  <ul className="crm-list">
+                    {model.doneTodos.map((todo) => (
+                      <TodoRow key={todo.id} todo={todo} now={now} todayEnd={model.todayEnd} />
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </section>
+
             <PplInspectionPanel />
           </>
         )}
       </CrmGate>
+      <TodoComposeDialog open={composeOpen} onClose={() => setComposeOpen(false)} />
     </div>
   );
 }

@@ -15,8 +15,16 @@ def dws_payloads() -> dict[tuple[str, ...], dict[str, object]]:
     return {
         commands["agenda"]: {"ok": True, "outcome": "success", "data": {"complete": True, "events": [
             {"eventId": "e1", "title": "客户周会", "start": "2026-10-14 09:30", "end": "2026-10-14 10:00"}]}},
-        commands["todos"]: {"ok": True, "outcome": "success", "data": {"tasks": [
-            {"taskId": "t1", "title": "补方案", "priority": 40, "planFinishDate": 1760500000000}]}},
+        # 2026-10-19 真实样本：task list 投影在 result.todoCards，状态用 --status 分桶。
+        commands["todos_pending"]: {"ok": True, "outcome": "success", "result": {"todoCards": [
+            {"taskId": "t1", "subject": "补方案", "priority": 40,
+             "dueTime": 1760500000000, "createdTime": 1760400000000, "finalStatusStage": 0}]}},
+        commands["todos_done"]: {"ok": True, "outcome": "success", "result": {"todoCards": [
+            {"taskId": "t2", "subject": "已完成事项", "priority": 20,
+             "dueTime": 1760600000000, "createdTime": 1760300000000, "finalStatusStage": 2}]}},
+        crm_snapshot.TODO_DETAIL_PREFIX + ("t2",): {"result": {"todoDetailModel": {
+            "taskId": "t2", "subject": "已完成事项", "isDone": True, "finishTime": 1760700000000,
+            "dueTime": 1760600000000, "executorIds": ["u1"]}}},
         # Shape read back from dws on 2026-10-15: pagination that cannot be proven
         # complete exits 1 with `complete:false` while still listing every group.
         commands["groups"]: {"complete": False, "count": 2, "failedCount": 1, "failures": [
@@ -250,6 +258,102 @@ class CrmSnapshotTest(unittest.TestCase):
         self.assertEqual(unread[0], {"id": "cidA==", "name": "示例科技铁三角"})
         self.assertEqual(len(unread), 2)
 
+    def test_todos_project_status_and_completion_time(self) -> None:
+        snapshot = self.build()
+        pending, done = snapshot["todos"]
+        self.assertEqual(pending, {
+            "id": "t1", "title": "补方案", "priority": 40, "dueAt": 1760500000000,
+            "done": False, "createdAt": 1760400000000, "finishedAt": None,
+        })
+        self.assertEqual(done["id"], "t2")
+        self.assertIs(done["done"], True)
+        self.assertEqual(done["finishedAt"], 1760700000000)
+        self.assertEqual(snapshot["sources"]["todos"]["status"], "ok")
+        self.assertEqual(snapshot["sources"]["todos"]["pendingCount"], 1)
+        self.assertEqual(snapshot["sources"]["todos"]["doneCount"], 1)
+        self.assertFalse(snapshot["sources"]["todos"]["pendingTruncated"])
+        self.assertFalse(snapshot["sources"]["todos"]["doneTruncated"])
+        self.assertEqual(snapshot["sources"]["todos"]["listLimit"], crm_snapshot.TODO_LIST_SIZE)
+
+    def test_todos_full_pending_page_is_partial(self) -> None:
+        payloads = dws_payloads()
+        size = crm_snapshot.TODO_LIST_SIZE
+        payloads[crm_snapshot.DWS_COMMANDS["todos_pending"]] = {
+            "ok": True, "outcome": "success", "result": {"todoCards": [
+                {"taskId": f"p{index:04d}", "subject": f"合成待办 {index}", "priority": 10,
+                 "dueTime": 1760500000000, "createdTime": 1760400000000}
+                for index in range(size)
+            ]},
+        }
+        snapshot = self.build(dws=FakeDws(payloads))
+        source = snapshot["sources"]["todos"]
+
+        self.assertEqual(source["status"], "partial")
+        self.assertFalse(source["complete"])
+        self.assertTrue(source["pendingTruncated"])
+        self.assertFalse(source["doneTruncated"])
+        self.assertEqual(source["pendingCount"], size)
+        self.assertEqual(source["listLimit"], size)
+
+    def test_todos_full_done_page_is_partial(self) -> None:
+        payloads = dws_payloads()
+        size = crm_snapshot.TODO_LIST_SIZE
+        done_cards = [
+            {"taskId": f"d{index:04d}", "subject": f"合成已完成 {index}", "priority": 10,
+             "dueTime": 1760600000000, "createdTime": 1760300000000}
+            for index in range(size)
+        ]
+        payloads[crm_snapshot.DWS_COMMANDS["todos_done"]] = {
+            "ok": True, "outcome": "success", "result": {"todoCards": done_cards},
+        }
+        for card in done_cards:
+            payloads[crm_snapshot.TODO_DETAIL_PREFIX + (card["taskId"],)] = {
+                "result": {"todoDetailModel": {
+                    "taskId": card["taskId"], "isDone": True, "finishTime": 1760700000000,
+                }},
+            }
+        snapshot = self.build(dws=FakeDws(payloads))
+        source = snapshot["sources"]["todos"]
+
+        self.assertEqual(source["status"], "partial")
+        self.assertFalse(source["complete"])
+        self.assertFalse(source["pendingTruncated"])
+        self.assertTrue(source["doneTruncated"])
+        self.assertEqual(source["detailsFailed"], 0)
+        self.assertEqual(source["doneCount"], size)
+
+    def test_todo_detail_failure_is_partial_not_fabricated(self) -> None:
+        payloads = dws_payloads()
+        payloads.pop(crm_snapshot.TODO_DETAIL_PREFIX + ("t2",))
+
+        def dws(arguments: tuple[str, ...]) -> dict[str, object]:
+            if arguments not in payloads:
+                raise crm_snapshot.SourceError("error", "dws_not_success")
+            return payloads[arguments]
+
+        snapshot = self.build(dws=dws)
+        source = snapshot["sources"]["todos"]
+        self.assertEqual(source["status"], "partial")
+        self.assertEqual(source["detailsFailed"], 1)
+        done = snapshot["todos"][1]
+        self.assertIs(done["done"], True)
+        self.assertIsNone(done["finishedAt"])
+
+    def test_run_dws_allows_only_validated_todo_detail_reads(self) -> None:
+        completed = subprocess.CompletedProcess(args=[], returncode=0, stdout='{"result": {}}', stderr="")
+        with mock.patch.object(crm_snapshot.shutil, "which", return_value="/usr/bin/dws"), mock.patch.object(
+            crm_snapshot.subprocess, "run", return_value=completed
+        ) as run:
+            crm_snapshot.run_dws(("todo", "task", "get", "--task-id", "taskSynthetic001"))
+        self.assertIn("todo", run.call_args.args[0])
+        for command in (
+            ("todo", "task", "get", "--task-id", "a;rm -rf /"),
+            ("todo", "task", "delete", "--task-id", "1"),
+            ("todo", "+create", "--title", "x", "--executors", "u"),
+        ):
+            with self.assertRaises(crm_snapshot.SourceError):
+                crm_snapshot.run_dws(command)
+
     def test_run_dws_returns_payload_on_nonzero_exit_without_error_envelope(self) -> None:
         # `chat +my-groups` exits 1 while printing the groups; the partial flag must survive.
         completed = subprocess.CompletedProcess(
@@ -314,7 +418,7 @@ class CrmSnapshotTest(unittest.TestCase):
             crm_snapshot.subprocess, "run", return_value=completed
         ):
             with self.assertRaises(crm_snapshot.SourceError) as caught:
-                crm_snapshot.run_dws(crm_snapshot.DWS_COMMANDS["todos"])
+                crm_snapshot.run_dws(crm_snapshot.DWS_COMMANDS["todos_pending"])
         self.assertEqual(caught.exception.code, "dws_rate_limit_error")
 
     def test_run_kunpeng_maps_cookie_exit_to_auth_required(self) -> None:

@@ -19,6 +19,7 @@ import { createCrmBridge, type CrmBridge, type InsightRecord } from "./crm-bridg
 import { createOpsBridge, type OpsBridge } from "./ops-bridge.ts";
 import { createPplInspectionBridge, type PplInspectionBridge } from "./ppl-inspection-bridge.ts";
 import { createFbiMetricsBridge, type FbiMetricsBridge } from "./fbi-metrics-bridge.ts";
+import { createDingtalkBridge, type DingtalkBridge } from "./dingtalk-bridge.ts";
 
 /**
  * Router for the local-only endpoints that back the workbench's "open on this Mac",
@@ -30,6 +31,7 @@ const HIGHLIGHTS_PATH = join(PROJECT_ROOT, ".local-cache", "yunqi-highlights.jso
 const SOLUTIONS_PATH = join(PROJECT_ROOT, ".local-cache", "solutions");
 
 const MAX_BODY_BYTES = 1024;
+const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const DEFAULT_RATE_LIMIT = { maxRequests: 60, windowMs: 60_000 };
 const DEFAULT_ALLOWED_ORIGINS = ["http://127.0.0.1:4173", "http://localhost:4173", "http://127.0.0.1:5173", "http://localhost:5173"];
 const RESPONSE_HEADERS = {
@@ -119,6 +121,7 @@ export interface LocalRouterDependencies {
   readonly opsBridge?: OpsBridge;
   readonly fbiMetricsBridge?: FbiMetricsBridge;
   readonly pplInspectionBridge?: PplInspectionBridge;
+  readonly dingtalkBridge?: DingtalkBridge;
 }
 
 function publicInsight(record: InsightRecord) {
@@ -137,6 +140,7 @@ export function createLocalRouter(dependencies: LocalRouterDependencies) {
   const opsBridge = dependencies.opsBridge ?? createOpsBridge();
   const fbiMetricsBridge = dependencies.fbiMetricsBridge ?? createFbiMetricsBridge();
   const pplInspectionBridge = dependencies.pplInspectionBridge ?? createPplInspectionBridge();
+  const dingtalkBridge = dependencies.dingtalkBridge ?? createDingtalkBridge();
   const allowedOrigins = new Set(dependencies.allowedOrigins ?? DEFAULT_ALLOWED_ORIGINS);
   const allowedHosts = new Set([
     `127.0.0.1:${dependencies.port}`,
@@ -279,6 +283,69 @@ export function createLocalRouter(dependencies: LocalRouterDependencies) {
         return jsonResponse({ ok: false, error: result.error }, status);
       }
       return jsonResponse({ ok: true, data: result.decision }, 201);
+    }
+
+    if (route === "/local/dingtalk/todo" && request.method === "POST") {
+      const body = await readJsonBody(request);
+      if (!body) return jsonResponse({ ok: false, error: "invalid_request" }, 400);
+      const result = await dingtalkBridge.createTodo(body);
+      if (!result.ok) {
+        const status = result.error === "busy" ? 429
+          : result.error === "dws_missing" ? 503
+            : result.error === "invalid_request" || result.error === "user_id_unavailable" ? 400
+              : 502;
+        return jsonResponse(
+          { ok: false, error: result.error, write: result.record ?? null },
+          status,
+          status === 429 ? { "Retry-After": "5" } : {},
+        );
+      }
+      return jsonResponse(
+        { ok: true, data: result.record, reused: result.reused },
+        result.reused ? 200 : 202,
+      );
+    }
+
+    if (route === "/local/dingtalk/todo/writes" && request.method === "GET") {
+      return jsonResponse({ ok: true, data: { writes: await dingtalkBridge.writes() } });
+    }
+
+    if (route === "/local/dingtalk/summary" && request.method === "GET") {
+      const date = url.searchParams.get("date") ?? undefined;
+      if (date !== undefined && !DATE_PATTERN.test(date)) {
+        return jsonResponse({ ok: false, error: "invalid_date" }, 400);
+      }
+      const summary = await dingtalkBridge.summary(date);
+      return summary
+        ? jsonResponse({ ok: true, data: summary, refresh: await dingtalkBridge.summaryStatus() })
+        : jsonResponse({ ok: false, error: "summary_not_found" }, 404);
+    }
+
+    if (route === "/local/dingtalk/summary" && request.method === "POST") {
+      const body = await readJsonBody(request);
+      const date = typeof body?.date === "string" ? body.date : undefined;
+      if (date !== undefined && !DATE_PATTERN.test(date)) {
+        return jsonResponse({ ok: false, error: "invalid_date" }, 400);
+      }
+      const result = await dingtalkBridge.startSummary(date);
+      if (!result.ok) return jsonResponse({ ok: false, error: result.error ?? "invalid_date" }, 400);
+      return jsonResponse({ ok: true, data: result.status, reused: result.reused }, 202);
+    }
+
+    if (route === "/local/dingtalk/summary/status" && request.method === "GET") {
+      return jsonResponse({ ok: true, data: await dingtalkBridge.summaryStatus() });
+    }
+
+    if (route === "/local/dingtalk/daily-messages" && request.method === "GET") {
+      const date = url.searchParams.get("date") ?? "";
+      const chatId = url.searchParams.get("chatId") ?? "";
+      if (!DATE_PATTERN.test(date) || !chatId) {
+        return jsonResponse({ ok: false, error: "invalid_request" }, 400);
+      }
+      const data = await dingtalkBridge.dailyMessages(date, chatId);
+      return data
+        ? jsonResponse({ ok: true, data })
+        : jsonResponse({ ok: false, error: "message_cache_unavailable" }, 404);
     }
 
     if (route === "/local/ops/push" && request.method === "POST") {

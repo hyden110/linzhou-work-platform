@@ -28,6 +28,13 @@ export interface SourceStatus {
   total?: number | null;
   /** 仅 top 段：鲲鹏自带的顺序/条数自检，false 表示口径异常必须上报警告。 */
   checks?: TopChecks;
+  /** 仅 todos 段：双桶单页是否触及 200 条上限（complete=false 的成因之一）。 */
+  pendingTruncated?: boolean;
+  doneTruncated?: boolean;
+  /** 仅 todos 段：已完成待办详情读取失败/超出详情上限的条数。 */
+  detailsFailed?: number;
+  /** 仅 todos 段：dws 单页的条数上限。 */
+  listLimit?: number;
   metric?: string | null;
   orderBy?: string | null;
   queriedAt?: string | null;
@@ -45,6 +52,10 @@ export interface TodoItem {
   title: string;
   priority: number;
   dueAt: number | null;
+  /** 完成状态；旧快照没有该字段时按未完成处理。 */
+  done?: boolean;
+  createdAt?: number | null;
+  finishedAt?: number | null;
 }
 
 export interface CustomerItem {

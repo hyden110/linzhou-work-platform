@@ -133,6 +133,21 @@ test("action queue orders overdue, today and upcoming items", () => {
   assert.deepEqual(queue.map((item) => item.urgency), ["overdue", "overdue", "today", "soon", "watch"]);
 });
 
+test("completed todos never enter the action queue while legacy snapshots still count", () => {
+  const now = parseLocalTime("2026-10-14 10:00")!;
+  const queue = actionQueue({
+    todos: [
+      { id: "done-overdue", title: "已完成但逾期", priority: 40, dueAt: now - 3_600_000, done: true },
+      { id: "done-today", title: "已完成今天", priority: 40, dueAt: now + 3_600_000, done: true },
+      { id: "legacy", title: "旧快照无状态", priority: 20, dueAt: now - 3_600_000 },
+      { id: "pending", title: "未完成今天", priority: 20, dueAt: now + 3_600_000 },
+    ],
+    agenda: [],
+    mentions: [],
+  }, now);
+  assert.deepEqual(queue.map((item) => item.id), ["todo:legacy", "todo:pending"]);
+});
+
 test("mentions become newest-first actions graded by recency", () => {
   const now = parseLocalTime("2026-10-15 10:00")!;
   const mention = (id: string, time: string, overrides: Record<string, string | null> = {}) => ({

@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,10 +31,24 @@ CUSTOMER_MAX_PAGES = 10
 PROJECT_PAGE_SIZE = 100
 PROJECT_MAX_PAGES = 5
 TOP_LIMIT = 10
+# 详情只读调用用于补完成时间；并发 4 路（实测 8 条 4 秒），上限防止异常账号拖垮刷新。
+TODO_DETAIL_PREFIX = ("todo", "task", "get", "--task-id")
+TODO_DETAIL_WORKERS = 4
+TODO_DETAIL_LIMIT = 300
+# Single-page list size. The real 2026-10-19 response carries no hasMore/total/
+# nextCursor field, so a full page cannot be proven complete.
+TODO_LIST_SIZE = 200
+TASK_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
+# `todo +get-related-tasks` only projects taskId/title/priority/planFinishDate and
+# silently ignores `--status`; status and completion time were verified on 2026-10-19
+# via `todo task list --status true|false` + `todo task get` (read-only).
 DWS_COMMANDS: Mapping[str, tuple[str, ...]] = {
     "agenda": ("calendar", "+week"),
-    "todos": ("todo", "+get-related-tasks"),
+    "todos_pending": ("todo", "task", "list", "--size", str(TODO_LIST_SIZE),
+                      "--role-types", "creator,executor,participant", "--status", "false"),
+    "todos_done": ("todo", "task", "list", "--size", str(TODO_LIST_SIZE),
+                   "--role-types", "creator,executor,participant", "--status", "true"),
     "groups": ("chat", "+my-groups", "--page-all", "--page-limit", "20"),
     "mentions": ("chat", "+at-me", "--days", "14", "--page-all", "--page-limit", "10",
                  "--max-items", "300", "--no-reactions"),
@@ -102,9 +117,17 @@ def _dws_error_code(*sources: str) -> str | None:
     return None
 
 
+def _is_todo_detail_command(command: tuple[str, ...]) -> bool:
+    return (
+        len(command) == 5
+        and command[:4] == TODO_DETAIL_PREFIX
+        and TASK_ID_PATTERN.fullmatch(command[4]) is not None
+    )
+
+
 def run_dws(arguments: Sequence[str]) -> Mapping[str, Any]:
     command = tuple(arguments)
-    if command not in DWS_COMMANDS.values():
+    if command not in DWS_COMMANDS.values() and not _is_todo_detail_command(command):
         raise SourceError("error", "command_not_allowed")
     executable = shutil.which("dws")
     if not executable:
@@ -233,6 +256,21 @@ def _require_success(payload: Mapping[str, Any]) -> None:
         raise SourceError("error", "dws_not_success")
 
 
+def _require_atomic_success(payload: Mapping[str, Any]) -> None:
+    """``todo task list`` returns only ``{result: ...}``; ``task get`` adds ``success``.
+
+    The atomic layer has no ``ok/outcome`` envelope, so accept it only when no
+    failure marker is present and a result body exists.
+    """
+    if payload.get("ok") is False or payload.get("success") is False:
+        raise SourceError("error", "dws_not_success")
+    error_code = _number(payload.get("errorCode"))
+    if error_code not in (None, 0):
+        raise SourceError("error", "dws_not_success")
+    if not isinstance(payload.get("result"), Mapping) and not isinstance(payload.get("data"), Mapping):
+        raise SourceError("error", "unexpected_shape")
+
+
 def fetch_agenda(dws: CommandRunner) -> SectionResult:
     payload = dws(DWS_COMMANDS["agenda"])
     _require_success(payload)
@@ -245,16 +283,127 @@ def fetch_agenda(dws: CommandRunner) -> SectionResult:
     return SectionResult(items, data.get("complete") is not False)
 
 
+def _todo_cards(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    """List transport read back from dws on 2026-10-19: ``result.todoCards``.
+
+    The legacy ``+get-related-tasks`` shape (``data.tasks``) is accepted as well so
+    fixtures and older runners keep working.
+    """
+    result = payload.get("result")
+    if isinstance(result, Mapping) and isinstance(result.get("todoCards"), list):
+        return _mappings(result["todoCards"])
+    data = payload.get("data")
+    if isinstance(data, Mapping) and isinstance(data.get("tasks"), list):
+        return _mappings(data["tasks"])
+    raise SourceError("error", "unexpected_shape")
+
+
+def _project_todo(card: Mapping[str, Any], done: bool) -> dict[str, Any]:
+    return {
+        "id": _text(card.get("taskId")),
+        "title": _text(card.get("subject")) or _text(card.get("title")) or "（无标题）",
+        "priority": int(_number(card.get("priority")) or 0),
+        "dueAt": int(_number(card.get("dueTime") or card.get("planFinishDate")) or 0) or None,
+        # 状态由 `task list --status true|false` 的桶决定（该过滤已实测生效），
+        # 详情里的 isDone 如有冲突以详情为准。
+        "done": done,
+        "createdAt": int(_number(card.get("createdTime")) or 0) or None,
+        "finishedAt": None,
+    }
+
+
+def _todo_detail(payload: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """Find the task detail mapping in either the atomic or shorthand response."""
+    result = payload.get("result")
+    if isinstance(result, Mapping):
+        model = result.get("todoDetailModel")
+        if isinstance(model, Mapping):
+            return model
+    data = payload.get("data")
+    return data if isinstance(data, Mapping) else None
+
+
+def _fetch_todo_detail(dws: CommandRunner, task_id: str) -> tuple[int | None, bool, bool]:
+    """Return ``(finishTime, isDone, ok)`` for a completed task; reads only."""
+    try:
+        payload = dws((*TODO_DETAIL_PREFIX, task_id))
+        _require_atomic_success(payload)
+    except (SourceError, OSError, subprocess.TimeoutExpired):
+        return None, True, False
+    model = _todo_detail(payload)
+    if model is None:
+        return None, True, False
+    finish = _number(model.get("finishTime"))
+    is_done = model.get("isDone") is True
+    return (int(finish) if finish else None), is_done, True
+
+
 def fetch_todos(dws: CommandRunner) -> SectionResult:
-    payload = dws(DWS_COMMANDS["todos"])
-    _require_success(payload)
-    items = [
-        {"id": _text(t.get("taskId")), "title": _text(t.get("title")) or "（无标题）",
-         "priority": int(_number(t.get("priority")) or 0),
-         "dueAt": int(_number(t.get("planFinishDate")) or 0) or None}
-        for t in _mappings(_list(payload, "data", "tasks"))
-    ]
-    return SectionResult(items)
+    """全部相关待办：未完成 + 已完成。
+
+    2026-10-19 的真实样本核对结论：``todo +get-related-tasks`` 的列表投影只有
+    id/title/priority/planFinishDate，且 ``--status`` 被静默忽略；因此状态和完成时间
+    改用 ``todo task list --status false|true``（两个桶，过滤已实测生效）加
+    ``todo task get`` 详情。详情并发有界；个别详情失败不伪造状态，整段标 partial。
+
+    The list response has no pagination/completeness field, so a bucket whose raw
+    card count reaches the requested page size may be silently truncated. Such a
+    bucket is marked incomplete instead of being presented as the full list.
+    """
+    pending_payload = dws(DWS_COMMANDS["todos_pending"])
+    done_payload = dws(DWS_COMMANDS["todos_done"])
+    _require_atomic_success(pending_payload)
+    _require_atomic_success(done_payload)
+    pending_cards = _todo_cards(pending_payload)
+    done_cards = _todo_cards(done_payload)
+
+    merged: dict[str, dict[str, Any]] = {}
+    for card in pending_cards:
+        item = _project_todo(card, False)
+        if item["id"]:
+            merged[item["id"]] = item
+    done_ids: list[str] = []
+    seen_done: set[str] = set()
+    for card in done_cards:
+        item = _project_todo(card, True)
+        if item["id"] and item["id"] not in seen_done:
+            merged[item["id"]] = item
+            done_ids.append(item["id"])
+            seen_done.add(item["id"])
+
+    details_failed = 0
+    targets = done_ids[:TODO_DETAIL_LIMIT]
+    if targets:
+        with ThreadPoolExecutor(max_workers=TODO_DETAIL_WORKERS) as pool:
+            results = list(pool.map(lambda task_id: _fetch_todo_detail(dws, task_id), targets))
+        for task_id, (finished_at, is_done, ok) in zip(targets, results):
+            item = merged.get(task_id)
+            if item is None:
+                continue
+            if not ok:
+                details_failed += 1
+                continue
+            item["finishedAt"] = finished_at
+            item["done"] = is_done
+    if len(done_ids) > len(targets):
+        details_failed += len(done_ids) - len(targets)
+
+    items = [item for item in merged.values() if item["id"]]
+    items.sort(key=lambda item: (item["done"], item["dueAt"] or 0, item["title"]))
+    pending_truncated = len(pending_cards) >= TODO_LIST_SIZE
+    done_truncated = len(done_cards) >= TODO_LIST_SIZE
+    return SectionResult(
+        items,
+        complete=details_failed == 0 and not pending_truncated and not done_truncated,
+        meta={
+            "pendingCount": len(merged) - len(done_ids),
+            "doneCount": len(done_ids),
+            "detailsFailed": details_failed,
+            "pendingTruncated": pending_truncated,
+            "doneTruncated": done_truncated,
+            "listLimit": TODO_LIST_SIZE,
+        },
+    )
 
 
 def fetch_groups(dws: CommandRunner) -> SectionResult:

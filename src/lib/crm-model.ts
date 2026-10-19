@@ -284,6 +284,8 @@ const TODO_SOON_MS = 3 * DAY_MS;
 
 function todoActions(snapshot: Pick<CrmSnapshot, "todos">, now: number, todayEnd: number): ActionItem[] {
   return snapshot.todos.flatMap((todo): ActionItem[] => {
+    // 旧快照没有 done 字段：缺省视为未完成；已完成项不再进入行动队列。
+    if (todo.done === true) return [];
     const urgency: Urgency | null = todo.dueAt === null
       ? (todo.priority >= HIGH_PRIORITY ? "watch" : null)
       : todo.dueAt < now ? "overdue"
