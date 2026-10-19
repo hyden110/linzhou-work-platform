@@ -22,6 +22,7 @@ import { createFbiMetricsBridge, type FbiMetricsBridge } from "./fbi-metrics-bri
 import { createDingtalkBridge, type DingtalkBridge } from "./dingtalk-bridge.ts";
 import { createKbBridge, KB_ID_PATTERN, KbBridgeError, type KbBridge } from "./kb-bridge.ts";
 import { createCasesBridge, type CasesBridge } from "./cases-bridge.ts";
+import { createHealthBridge, type HealthBridge } from "./health-bridge.ts";
 
 /**
  * Router for the local-only endpoints that back the workbench's "open on this Mac",
@@ -126,6 +127,7 @@ export interface LocalRouterDependencies {
   readonly dingtalkBridge?: DingtalkBridge;
   readonly kbBridge?: KbBridge;
   readonly casesBridge?: CasesBridge;
+  readonly healthBridge?: HealthBridge;
 }
 
 function publicInsight(record: InsightRecord) {
@@ -147,6 +149,14 @@ export function createLocalRouter(dependencies: LocalRouterDependencies) {
   const dingtalkBridge = dependencies.dingtalkBridge ?? createDingtalkBridge();
   const kbBridge = dependencies.kbBridge ?? createKbBridge();
   const casesBridge = dependencies.casesBridge ?? createCasesBridge();
+  const healthBridge = dependencies.healthBridge ?? createHealthBridge({
+    crmSnapshot: crmBridge.snapshot,
+    dingtalkWrites: dingtalkBridge.writes,
+    fbiMetrics: fbiMetricsBridge.metrics,
+    pplInspection: pplInspectionBridge.inspection,
+    kbConfig: kbBridge.config,
+    opsDigest: opsBridge.digest,
+  });
   const allowedOrigins = new Set(dependencies.allowedOrigins ?? DEFAULT_ALLOWED_ORIGINS);
   const allowedHosts = new Set([
     `127.0.0.1:${dependencies.port}`,
@@ -506,6 +516,17 @@ export function createLocalRouter(dependencies: LocalRouterDependencies) {
         return jsonResponse({ ok: true, data: await casesBridge.snapshot() });
       } catch {
         return jsonResponse({ ok: false, error: "cases_unavailable" }, 502);
+      }
+    }
+
+    // 环境与健康体检（F4）：只读快照，回答「现在还能不能取到数」。
+    // CLI 探测由用户在体检面板手动触发（前端不自动轮询）；桥内零写盘，
+    // env 只报 set/unset，子进程输出回传前一律过 redact。
+    if (route === "/local/health" && request.method === "GET") {
+      try {
+        return jsonResponse({ ok: true, data: await healthBridge.snapshot() });
+      } catch {
+        return jsonResponse({ ok: false, error: "health_unavailable" }, 502);
       }
     }
 

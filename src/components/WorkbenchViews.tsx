@@ -30,6 +30,7 @@ import { groupCitationsByDocument, retrieveKnowledge, type RetrievalResponse } f
 import { kbErrorMessage, searchExternalKb, type KbExternalAnswer } from "../lib/kb-client";
 import { DocumentFacetFilter, type DocumentFacets } from "./FacetFilter";
 import { DocumentRow } from "./DocumentRow";
+import { HealthPanel } from "./HealthPanel";
 import { ShelfGrid } from "./ShelfGrid";
 import { StatusBadge, ViewHeading, numberedAnswer, retrievalErrorMessage, type ViewProps } from "./shared";
 
@@ -428,6 +429,7 @@ export function SyncView({ index }: ViewProps) {
         </section>
         <aside className="panel schedule-card"><span className="eyebrow">SYNC MODE</span><Clock3 size={25} /><h2>按需手动同步</h2><strong>{schedule.clock}</strong><p>{schedule.note}</p><StatusBadge tone={schedule.tone}>{schedule.label}</StatusBadge></aside>
       </div>
+      <HealthPanel />
     </div>
   );
 }
