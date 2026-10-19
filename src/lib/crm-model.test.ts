@@ -2,6 +2,19 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  actionKey,
+  buildActionFeed,
+  loadTriage,
+  normalizeTriage,
+  parseDayOnly,
+  pruneTriage,
+  saveTriage,
+  setTriageState,
+  triageStateOf,
+  type TriageMap,
+  type TriageStorage,
+} from "./action-feed.ts";
+import {
   actionQueue,
   classifyMaas,
   customerLifecycle,
@@ -17,7 +30,7 @@ import {
   projectStage,
   topBoard,
 } from "./crm-model.ts";
-import type { CustomerItem, ProjectItem, SourceStatus } from "./crm-types.ts";
+import type { CrmSnapshot, CustomerItem, ProjectItem, SourceStatus } from "./crm-types.ts";
 
 function customer(overrides: Partial<CustomerItem>): CustomerItem {
   return {
@@ -440,4 +453,239 @@ test("dingtalk sorts mentions newest first and passes unread through", () => {
   });
   assert.deepEqual(board.mentions.map((row) => row.id), ["m2", "m1", "m3"]);
   assert.deepEqual(board.unread, [{ id: "u1", name: "未读群" }, { id: "u2", name: null }]);
+});
+
+// --- 统一行动队列：PPL 临近节点 + 本机 triage ---
+// 以下用例全部使用合成客户（甲科技有限公司 / 乙股份有限公司）与虚构项目名，不含真实客户数据。
+
+const DAY = 86_400_000;
+
+/** 行动队列专用夹具：固定「今天 = 2026-10-14」，节点日期全部围绕该日合成。 */
+function queueFixture(projects: ProjectItem[]) {
+  return {
+    todos: [],
+    agenda: [],
+    mentions: [],
+    customers: [
+      customer({ cid: "C1", name: "甲科技有限公司" }),
+      customer({ cid: "C2", name: "乙股份有限公司" }),
+    ],
+    projects,
+  };
+}
+
+function fakeStorage(initial: string | null): TriageStorage & { snapshot: () => string | null } {
+  let data = initial;
+  return {
+    getItem: () => data,
+    setItem: (_key: string, value: string) => { data = value; },
+    snapshot: () => data,
+  };
+}
+
+test("ppl queue takes the nearest node within ±7 days and skips everything else", () => {
+  const now = parseLocalTime("2026-10-14 10:00")!;
+  const feed = buildActionFeed(queueFixture([
+    // 双节点都入窗：取距今天最近的「起量 +2」，不是「签约 +5」。
+    project({ id: "P1", cid: "C1", name: "FY27-甲科技-大模型平台", expectedContractDate: "2026-10-19", expectedGaapStartDate: "2026-10-16" }),
+    // 只有一个节点且在窗外（+8）：不进队。
+    project({ id: "P2", cid: "C1", name: "FY27-甲科技-资源上量", expectedContractDate: "2026-10-22" }),
+    // -7 天边界：在窗内，算已逾期节点。
+    project({ id: "P3", cid: "C1", name: "FY27-甲科技-推理服务", expectedContractDate: "2026-10-07" }),
+    // -8 天窗外：不进队。
+    project({ id: "P4", cid: "C1", name: "FY27-甲科技-历史项目", expectedGaapStartDate: "2026-10-06" }),
+    // 已关闭项目：即使日期入窗也不进队（队列只收还要行动的项目）。
+    project({ id: "P5", cid: "C1", name: "FY27-甲科技-已关闭", state: "PROJECT_STATE_LOST", expectedGaapStartDate: "2026-10-15" }),
+    // 同一客户第二个项目：独立行动，各自成项。
+    project({ id: "P6", cid: "C2", name: "FY27-乙股份-混合云", expectedContractDate: "2026-10-20" }),
+  ]), { now, triage: {}, showHandled: false });
+
+  const ppl = feed.items.filter((item) => item.kind === "ppl");
+  // 桶序 over → today → week：逾期节点在前。
+  assert.deepEqual(ppl.map((item) => [item.node, item.days]), [["contract", -7], ["gaap", 2], ["contract", 6]]);
+  assert.deepEqual(ppl.map((item) => item.customer), ["甲科技有限公司", "甲科技有限公司", "乙股份有限公司"]);
+  assert.deepEqual(ppl.map((item) => item.bucket), ["over", "week", "week"]);
+  assert.deepEqual(ppl.map((item) => item.urgency), ["overdue", "soon", "soon"]);
+  assert.equal(ppl[1]!.detail.includes("起量 2 天后"), true);
+  assert.equal(ppl[0]!.detail.includes("签约 逾期 7 天"), true);
+  assert.equal(feed.counts.ppl, 3);
+});
+
+test("triage keys are stable across days and the hash part is exactly 14 chars", () => {
+  const now = parseLocalTime("2026-10-14 10:00")!;
+  const snapshot = queueFixture([
+    project({ id: "P1", cid: "C1", name: "FY27-甲科技-大模型平台", expectedContractDate: "2026-10-16" }),
+  ]);
+  const dayOne = buildActionFeed({
+    ...snapshot,
+    todos: [{ id: "t1", title: "合成待办", priority: 20, dueAt: now + 3_600_000 }],
+  }, { now, triage: {}, showHandled: false });
+  const dayTwo = buildActionFeed({
+    ...snapshot,
+    todos: [{ id: "t1", title: "合成待办", priority: 20, dueAt: now + 3_600_000 }],
+  }, { now: now + DAY, triage: {}, showHandled: false });
+
+  const keysOne = dayOne.items.map((item) => item.key).sort();
+  const keysTwo = dayTwo.items.map((item) => item.key).sort();
+  // 同一快照在 NOW 与 NOW+24h 键完全一致（跨日稳定）。
+  assert.deepEqual(keysTwo, keysOne);
+  // 键 = 来源前缀 + 恰 14 字符 base36 哈希；不同来源不同前缀。
+  for (const key of keysOne) assert.match(key, /^(todo|meeting|mention|ppl):[0-9a-z]{14}$/);
+  // 不同输入不碰撞：同一前缀下两个不同条目键不同。
+  const pplKeys = dayOne.items.filter((item) => item.kind === "ppl").map((item) => item.key);
+  const todoKeys = dayOne.items.filter((item) => item.kind === "todo").map((item) => item.key);
+  assert.notDeepEqual(pplKeys, todoKeys);
+  assert.equal(new Set(keysOne).size, keysOne.length);
+  // 纯函数自身确定：同输入两次调用同键。
+  assert.equal(actionKey("ppl", ["P1", "签约", "2026-10-16"]), actionKey("ppl", ["P1", "签约", "2026-10-16"]));
+});
+
+test("ppl cap runs after triage: marking the earliest done surfaces the sixth item", () => {
+  const now = parseLocalTime("2026-10-14 10:00")!;
+  const projects = [1, 2, 3, 4, 5, 6].map((n) =>
+    project({ id: `P${n}`, cid: "C1", name: `FY27-甲科技-项目${n}`, expectedContractDate: `2026-10-${14 + n}` }));
+  const args = { now, triage: {} as TriageMap, showHandled: false };
+
+  const before = buildActionFeed(queueFixture(projects), args);
+  assert.equal(before.counts.ppl, 5); // 6 条 open 只进 5 条
+  assert.equal(before.counts.openPpl, 5);
+  assert.equal(before.buckets.week.filter((item) => item.kind === "ppl").length, 5);
+
+  // 标记最早一条（+1 天）done → 第 6 条顶上。
+  const earliest = [...before.items].filter((item) => item.kind === "ppl")
+    .sort((a, b) => (a.days ?? 0) - (b.days ?? 0))[0]!;
+  const triage = setTriageState({}, earliest.key, "done", now);
+  const after = buildActionFeed(queueFixture(projects), { ...args, triage });
+  assert.equal(after.counts.done, 1);
+  assert.equal(after.counts.dealt, 1);
+  assert.equal(after.counts.ppl, 6); // 5 open + 1 handled 全量计数
+  assert.equal(after.counts.openPpl, 5);
+  // 默认隐藏已处理：桶里只有 5 条未处理；tab 计数只算未处理。
+  assert.equal(after.buckets.week.length, 5);
+  assert.equal(after.counts.week, 5);
+  assert.ok(after.buckets.week.every((item) => item.state === null));
+  assert.ok(after.buckets.week.some((item) => item.kind === "ppl" && item.days === 6)); // 第 6 条出现了
+
+  // 「显示已处理」展开：6 条全量可见，已处理带状态。
+  const expanded = buildActionFeed(queueFixture(projects), { ...args, triage, showHandled: true });
+  assert.equal(expanded.buckets.week.length, 6);
+  assert.equal(expanded.buckets.week.filter((item) => item.state === "done").length, 1);
+});
+
+test("duplicate project+node+date rows dedupe, distinct projects stay, dealt counting survives", () => {
+  const now = parseLocalTime("2026-10-14 10:00")!;
+  const projects = [
+    project({ id: "P1", cid: "C1", name: "FY27-甲科技-大模型平台", expectedContractDate: "2026-10-16" }),
+    // 重复行：同项目 + 同节点 + 同日期 → 去重成一条。
+    project({ id: "P1", cid: "C1", name: "FY27-甲科技-大模型平台", expectedContractDate: "2026-10-16" }),
+    // 同客户另一项目：独立行动，不去重。
+    project({ id: "P2", cid: "C1", name: "FY27-甲科技-推理服务", expectedContractDate: "2026-10-17" }),
+  ];
+  const feed = buildActionFeed(queueFixture(projects), { now, triage: {}, showHandled: false });
+  const ppl = feed.items.filter((item) => item.kind === "ppl");
+  assert.equal(ppl.length, 2);
+  assert.deepEqual(ppl.map((item) => item.days), [2, 3]);
+
+  // 去重后逐条 triage：done + ignored → dealt = 2。
+  const triage = setTriageState(setTriageState({}, ppl[0]!.key, "done", now), ppl[1]!.key, "ignored", now);
+  const after = buildActionFeed(queueFixture(projects), { now, triage, showHandled: true });
+  assert.equal(after.counts.done, 1);
+  assert.equal(after.counts.ignored, 1);
+  assert.equal(after.counts.dealt, 2);
+  assert.equal(after.counts.open, 0);
+});
+
+test("malformed dates and triage payloads never throw and degrade to empty", () => {
+  const now = parseLocalTime("2026-10-14 10:00")!;
+  const feed = buildActionFeed(queueFixture([
+    project({ id: "P1", cid: "C1", name: "缺日期" }),
+    project({ id: "P2", cid: "C1", name: "自然语言", expectedContractDate: "下周三" }),
+    project({ id: "P3", cid: "C1", name: "假日期", expectedGaapStartDate: "2026-02-31" }),
+    project({ id: "P4", cid: "C1", name: "超范围月份", expectedContractDate: "2026-13-05" }),
+    project({ id: "P5", cid: "C1", name: "空串", expectedGaapStartDate: "" }),
+    project({ id: "P6", cid: "C2", name: "带时间前缀", expectedContractDate: "2026-10-16 09:00:00" }),
+  ]), { now, triage: {}, showHandled: false });
+  // 只有合法的 ISO 日期前缀（+2 天）入队，其余全部静默跳过。
+  assert.deepEqual(feed.items.filter((item) => item.kind === "ppl").map((item) => item.days), [2]);
+
+  // 畸形日期解析为 null，不抛错。
+  assert.equal(parseDayOnly(null), null);
+  assert.equal(parseDayOnly(42), null);
+  assert.equal(parseDayOnly("2026-02-30"), null);
+  assert.equal(parseDayOnly("2026-10-16T09:00"), parseLocalTime("2026-10-16")!);
+
+  // 畸形 triage 数据：合法条目保留，畸形丢弃，不抛错。
+  const normalized = normalizeTriage({
+    k1: { s: "done", at: "2026-10-13T00:00:00.000Z" },
+    k2: { s: "bogus", at: "2026-10-13T00:00:00.000Z" },
+    k3: "junk",
+    k4: { s: "ignored" },
+    k5: { s: "ignored", at: 42 },
+  });
+  assert.deepEqual(Object.keys(normalized), ["k1"]);
+  assert.deepEqual(normalizeTriage(null), {});
+  assert.deepEqual(normalizeTriage([1, 2]), {});
+});
+
+test("triage set/undo/prune round-trips through local storage", () => {
+  const now = parseLocalTime("2026-10-14 10:00")!;
+  let map: TriageMap = {};
+  map = setTriageState(map, "ppl:x", "done", now);
+  assert.equal(triageStateOf(map, "ppl:x"), "done");
+  // 撤销 = 删键回到 open。
+  map = setTriageState(map, "ppl:x", "open", now);
+  assert.equal(triageStateOf(map, "ppl:x"), null);
+  // 非法 state 不改内容。
+  const untouched = setTriageState(map, "ppl:y", "bogus" as never, now);
+  assert.deepEqual(untouched, map);
+
+  map = setTriageState(map, "ppl:keep", "ignored", now - 10 * DAY);
+  map = setTriageState(map, "ppl:stale", "done", now - 40 * DAY);
+  map = setTriageState(map, "ppl:broken", "done", now);
+  map = { ...map, "ppl:broken": { s: "done", at: "not-a-date" } };
+  const pruned = pruneTriage(map, now);
+  assert.equal(triageStateOf(pruned, "ppl:keep"), "ignored");
+  assert.equal("ppl:stale" in pruned, false); // 超 30 天清理
+  assert.equal("ppl:broken" in pruned, false); // 畸形时间戳丢弃
+
+  // 存储往返 + 损坏/越界数据处理。
+  const storage = fakeStorage(null);
+  assert.equal(saveTriage(pruned, storage), true);
+  assert.deepEqual(loadTriage(storage, now), pruned);
+  assert.deepEqual(loadTriage(fakeStorage("{not-json"), now), {});
+  assert.deepEqual(loadTriage(fakeStorage(JSON.stringify({
+    fresh: { s: "done", at: new Date(now - 5 * DAY).toISOString() },
+    old: { s: "done", at: new Date(now - 40 * DAY).toISOString() },
+  })), now), { fresh: { s: "done", at: new Date(now - 5 * DAY).toISOString() } });
+  // 无存储环境安全降级。
+  assert.deepEqual(loadTriage(null, now), {});
+  assert.equal(saveTriage(pruned, null), false);
+});
+
+test("base todo/meeting/mention items join the same triage flow and buckets", () => {
+  const now = parseLocalTime("2026-10-14 10:00")!;
+  const snapshot = {
+    todos: [{ id: "t1", title: "合成逾期待办", priority: 20, dueAt: now - 3_600_000 }],
+    agenda: [{ id: "e1", title: "合成下午会", start: "2026-10-14 15:00", end: "2026-10-14 16:00" }],
+    mentions: [] as CrmSnapshot["mentions"],
+    customers: [] as CrmSnapshot["customers"],
+    projects: [] as CrmSnapshot["projects"],
+  };
+  const feed = buildActionFeed(snapshot, { now, triage: {}, showHandled: false });
+  assert.deepEqual(feed.buckets.over.map((item) => item.id), ["todo:t1"]);
+  assert.deepEqual(feed.buckets.today.map((item) => item.id), ["meeting:e1"]);
+  assert.equal(feed.counts.over, 1);
+  assert.equal(feed.counts.today, 1);
+
+  // 待办标记 done 后默认隐藏，展开可见；撤销后回到 open。
+  const key = feed.buckets.over[0]!.key;
+  const done = buildActionFeed(snapshot, { now, triage: setTriageState({}, key, "done", now), showHandled: false });
+  assert.equal(done.buckets.over.length, 0);
+  assert.equal(done.counts.dealt, 1);
+  const shown = buildActionFeed(snapshot, { now, triage: setTriageState({}, key, "done", now), showHandled: true });
+  assert.equal(shown.buckets.over.length, 1);
+  assert.equal(shown.buckets.over[0]!.state, "done");
+  const undone = buildActionFeed(snapshot, { now, triage: setTriageState(setTriageState({}, key, "done", now), key, "open", now), showHandled: false });
+  assert.equal(undone.buckets.over.length, 1);
+  assert.equal(undone.counts.open, 2);
 });

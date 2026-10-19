@@ -1,30 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AtSign, Bot, CalendarClock, CheckCircle2, CircleAlert, CircleDollarSign, ListTodo, Plus, Users } from "lucide-react";
+import { Bot, CalendarClock, CheckCircle2, CircleAlert, CircleDollarSign, ListTodo, Plus, Users } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { actionQueue, parseLocalTime, startOfDay, type ActionItem, type Urgency } from "../../lib/crm-model";
+import { actionQueue, parseLocalTime, startOfDay } from "../../lib/crm-model";
 import type { TodoItem } from "../../lib/crm-types";
 import { fetchFbiMetrics, fbiMetricsErrorMessage, startFbiMetrics, type FbiMetrics } from "../../lib/fbi-metrics-client";
 import { StatusBadge, ViewHeading } from "../shared";
 import { useCrm } from "./CrmProvider";
 import { CrmGate, RefreshControl, SourceBanner, formatClock, formatDateTime, formatGaap } from "./crm-shared";
+import { ActionQueuePanel } from "./ActionQueuePanel";
 import { PplInspectionPanel } from "./PplInspectionPanel";
 import { TodoComposeDialog } from "./TodoComposeDialog";
 
 const DAY_MS = 86_400_000;
-const QUEUE_PREVIEW = 12;
-
-const URGENCY: Record<Urgency, { label: string; tone: "amber" | "green" | "blue" | "muted" }> = {
-  overdue: { label: "已逾期", tone: "amber" },
-  today: { label: "今天", tone: "green" },
-  soon: { label: "近 3 天", tone: "blue" },
-  watch: { label: "关注", tone: "muted" },
-};
-
-const KIND_ICON: Record<ActionItem["kind"], LucideIcon> = {
-  todo: ListTodo,
-  meeting: CalendarClock,
-  mention: AtSign,
-};
 
 function useNow(intervalMs = 60_000): number {
   const [now, setNow] = useState(() => Date.now());
@@ -107,22 +94,6 @@ function Metric({ icon: Icon, label, value, note, primary }: { icon: LucideIcon;
   );
 }
 
-function ActionRow({ item }: { item: ActionItem }) {
-  const Icon = KIND_ICON[item.kind];
-  const urgency = URGENCY[item.urgency];
-  return (
-    <li className="crm-action">
-      <Icon size={15} />
-      <div>
-        <strong>{item.title}</strong>
-        <span>{item.detail}</span>
-      </div>
-      <time>{item.at === null ? "无截止" : formatDateTime(item.at)}</time>
-      <StatusBadge tone={urgency.tone}>{urgency.label}</StatusBadge>
-    </li>
-  );
-}
-
 function todoBadge(todo: TodoItem, now: number, todayEnd: number): { label: string; tone: "amber" | "green" | "blue" | "muted" } {
   if (todo.done === true) return { label: "已完成", tone: "muted" };
   if (todo.dueAt === null) return { label: todo.priority >= 30 ? "高优先级 · 无截止" : "无截止", tone: "muted" };
@@ -153,7 +124,6 @@ function TodoRow({ todo, now, todayEnd }: { todo: TodoItem; now: number; todayEn
 export function CockpitView() {
   const { snapshot } = useCrm();
   const now = useNow();
-  const [expanded, setExpanded] = useState(false);
   const [composeOpen, setComposeOpen] = useState(false);
   const fbi = useFbiMetrics();
 
@@ -190,7 +160,6 @@ export function CockpitView() {
   }, [snapshot, now]);
 
   const customersReady = snapshot?.sources.customers?.status === "ok";
-  const visibleQueue = model ? (expanded ? model.queue : model.queue.slice(0, QUEUE_PREVIEW)) : [];
   const todoSource = snapshot?.sources.todos;
   const todoWarning = todoSource?.complete === false
     ? (todoSource.pendingTruncated || todoSource.doneTruncated
@@ -218,7 +187,7 @@ export function CockpitView() {
       <CrmGate>
         {snapshot && model && (
           <>
-            <SourceBanner keys={["agenda", "todos", "mentions", "customers"]} />
+            <SourceBanner keys={["agenda", "todos", "mentions", "customers", "projects"]} />
             <section className="metric-grid crm-metrics crm-metrics--seven" aria-label="关键指标">
               <Metric icon={CalendarClock} label="今日日程" value={String(model.todayAgenda.length)} note={`剩余 ${model.todayAgenda.filter((row) => (row.end ?? row.start ?? 0) >= now).length} 场`} primary />
               <Metric icon={CircleAlert} label="逾期待办" value={String(model.overdue)} note={`共 ${model.pendingTodos.length} 条未完成 · ${model.doneTodos.length} 条已完成`} />
@@ -259,24 +228,7 @@ export function CockpitView() {
             )}
 
             <div className="crm-cockpit">
-              <section className="panel">
-                <header className="panel__header">
-                  <div><span className="eyebrow">ACTION QUEUE</span><h2>行动队列</h2></div>
-                  <span>{model.queue.length} 项</span>
-                </header>
-                {model.queue.length === 0
-                  ? <p className="crm-muted">暂无需要处理的待办、会议或 @。</p>
-                  : (
-                    <>
-                      <ul className="crm-list">{visibleQueue.map((item) => <ActionRow key={item.id} item={item} />)}</ul>
-                      {model.queue.length > QUEUE_PREVIEW && (
-                        <button className="text-button crm-more" onClick={() => setExpanded((value) => !value)}>
-                          {expanded ? "收起" : `展开全部 ${model.queue.length} 项`}
-                        </button>
-                      )}
-                    </>
-                  )}
-              </section>
+              <ActionQueuePanel snapshot={snapshot} now={now} />
 
               <div className="crm-side">
                 <section className="panel">

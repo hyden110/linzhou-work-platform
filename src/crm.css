@@ -362,3 +362,16 @@
   .crm-daily-group > header { flex-wrap: wrap; }
   .crm-daily-group > header span { margin-left: 22px; }
 }
+
+/* 统一行动队列：三桶 tab 复用 .dimension-tabs；triage 操作与已处理弱化态 */
+.crm-queue__tabs { margin: 10px 18px 0; }
+.crm-queue__tools { display: flex; align-items: center; gap: 12px; }
+.crm-queue__tools > span { color: var(--text-dim); font: 11px ui-monospace, monospace; }
+.crm-queue__ops { display: flex; align-items: center; gap: 9px; }
+.crm-queue__ops .text-button { font-size: 10px; white-space: nowrap; }
+.crm-action.is-handled { opacity: .55; }
+.crm-action.is-handled strong { color: var(--text-dim); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--text-dim) 55%, transparent); }
+
+@media (max-width: 560px) {
+  .crm-action .crm-queue__ops { flex-wrap: wrap; justify-content: flex-end; }
+}
