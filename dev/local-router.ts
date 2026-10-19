@@ -24,6 +24,8 @@ import { createKbBridge, KB_ID_PATTERN, KbBridgeError, type KbBridge } from "./k
 import { createCasesBridge, type CasesBridge } from "./cases-bridge.ts";
 import { createHealthBridge, type HealthBridge } from "./health-bridge.ts";
 import { createLeadsBridge, LeadsSyncError, type LeadsBridge } from "./leads-bridge.ts";
+import { createReportBridge, ReportBridgeError, type ReportBridge } from "./report-bridge.ts";
+import { createNotifyBridge, NotifyBridgeError, type NotifyBridge } from "./notify-bridge.ts";
 
 /**
  * Router for the local-only endpoints that back the workbench's "open on this Mac",
@@ -130,6 +132,28 @@ export interface LocalRouterDependencies {
   readonly casesBridge?: CasesBridge;
   readonly healthBridge?: HealthBridge;
   readonly leadsBridge?: LeadsBridge;
+  readonly reportBridge?: ReportBridge;
+  readonly notifyBridge?: NotifyBridge;
+}
+
+/** 稳定错误码 → HTTP 状态映射（report）：unconfigured=400（含参数/白名单拒绝），其余 502。 */
+function reportFailure(error: unknown): Response {
+  if (error instanceof ReportBridgeError) {
+    const status = error.code === "report_unconfigured" ? 400 : 502;
+    return jsonResponse({ ok: false, error: error.code, message: error.message }, status);
+  }
+  // F5 评审 P3-1：未知异常兜底 502，避免 500 被客户端误读为「本地桥未启动」。
+  return jsonResponse({ ok: false, error: "report_unavailable" }, 502);
+}
+
+/** 稳定错误码 → HTTP 状态映射（notify）：invalid_request=400，其余 502。 */
+function notifyFailure(error: unknown): Response {
+  if (error instanceof NotifyBridgeError) {
+    const status = error.code === "notify_invalid_request" ? 400 : 502;
+    const code = error.code === "notify_invalid_request" ? "invalid_request" : "notify_unavailable";
+    return jsonResponse({ ok: false, error: code, message: error.message }, status);
+  }
+  return jsonResponse({ ok: false, error: "notify_unavailable" }, 502);
 }
 
 function publicInsight(record: InsightRecord) {
@@ -160,6 +184,8 @@ export function createLocalRouter(dependencies: LocalRouterDependencies) {
     opsDigest: opsBridge.digest,
   });
   const leadsBridge = dependencies.leadsBridge ?? createLeadsBridge();
+  const reportBridge = dependencies.reportBridge ?? createReportBridge();
+  const notifyBridge = dependencies.notifyBridge ?? createNotifyBridge();
   const allowedOrigins = new Set(dependencies.allowedOrigins ?? DEFAULT_ALLOWED_ORIGINS);
   const allowedHosts = new Set([
     `127.0.0.1:${dependencies.port}`,
@@ -557,6 +583,76 @@ export function createLocalRouter(dependencies: LocalRouterDependencies) {
         const status = error.code === "leads_unconfigured" ? 400
           : error.code === "leads_unavailable" ? 502 : 409;
         return jsonResponse({ ok: false, error: error.code, message: error.message }, status);
+      }
+    }
+
+    // 日周报（F6）：全只读。当日草稿 / outbox 提交状态 / 双周报目录与正文 /
+    // QoderWake 定时任务状态；save / draft / send 等写动作本批不提供（POST 落 405）。
+    if (route === "/local/report/state" && request.method === "GET") {
+      try {
+        return jsonResponse({ ok: true, data: await reportBridge.state() });
+      } catch (error) {
+        return reportFailure(error);
+      }
+    }
+
+    if (route === "/local/report/automations" && request.method === "GET") {
+      try {
+        return jsonResponse({ ok: true, data: await reportBridge.automations({ fresh: url.searchParams.get("fresh") === "1" }) });
+      } catch (error) {
+        return reportFailure(error);
+      }
+    }
+
+    if (route === "/local/report/weeklies" && request.method === "GET") {
+      try {
+        return jsonResponse({ ok: true, data: await reportBridge.weeklies({ fresh: url.searchParams.get("fresh") === "1" }) });
+      } catch (error) {
+        return reportFailure(error);
+      }
+    }
+
+    if (route === "/local/report/weekly" && request.method === "GET") {
+      try {
+        const node = url.searchParams.get("node") ?? "";
+        return jsonResponse({ ok: true, data: await reportBridge.weekly(node, { fresh: url.searchParams.get("fresh") === "1" }) });
+      } catch (error) {
+        return reportFailure(error);
+      }
+    }
+
+    // 消息中心（F6）：收件箱只读拉取 + 已读位切换 + 测试消息生产者。
+    // 无 SSE、无轮询：端上打开面板时拉取 + 显式刷新；真实事件源待后续批次接入。
+    if (route === "/local/notify/state" && request.method === "GET") {
+      try {
+        return jsonResponse({ ok: true, data: await notifyBridge.state() });
+      } catch (error) {
+        return notifyFailure(error);
+      }
+    }
+
+    if (route === "/local/notify/items" && request.method === "GET") {
+      try {
+        return jsonResponse({ ok: true, data: await notifyBridge.items() });
+      } catch (error) {
+        return notifyFailure(error);
+      }
+    }
+
+    if (route === "/local/notify/read" && request.method === "POST") {
+      try {
+        const body = await readJsonBody(request) ?? {};
+        return jsonResponse({ ok: true, data: await notifyBridge.markRead(body) });
+      } catch (error) {
+        return notifyFailure(error);
+      }
+    }
+
+    if (route === "/local/notify/test" && request.method === "POST") {
+      try {
+        return jsonResponse({ ok: true, data: await notifyBridge.enqueueTest() });
+      } catch (error) {
+        return notifyFailure(error);
       }
     }
 

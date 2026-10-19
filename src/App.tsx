@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Bell, Command, Menu, Search, SlidersHorizontal, X } from "lucide-react";
+import { Command, Menu, Search, SlidersHorizontal, X } from "lucide-react";
 import { LocalRuntimeProvider } from "./components/LocalRuntimeProvider";
 import { AssistantView } from "./components/AssistantView";
 import { CockpitView } from "./components/crm/CockpitView";
@@ -8,7 +8,10 @@ import { CustomersView } from "./components/crm/CustomersView";
 import { DingtalkView } from "./components/crm/DingtalkView";
 import { PplFollowupView } from "./components/crm/PplFollowupView";
 import { LeadsView } from "./components/crm/LeadsView";
+import { InboxView } from "./components/InboxView";
+import { NotifyBell } from "./components/NotifyBell";
 import { KnowledgeMapView } from "./components/KnowledgeMapView";
+import { ReportsView } from "./components/report/ReportsView";
 import { Sidebar } from "./components/Sidebar";
 import { OpsProvider } from "./components/ops/OpsProvider";
 import { OpsView } from "./components/ops/OpsView";
@@ -42,6 +45,8 @@ const viewTitles: Record<ViewId, string> = {
   yunqi: "云栖大会",
   sync: "同步中心",
   ops: "运营推广",
+  report: "日周报",
+  inbox: "消息中心",
 };
 
 const EMPTY_DOCUMENTS: KnowledgeDocument[] = [];
@@ -203,6 +208,8 @@ function Workbench() {
     yunqi: <YunqiView {...commonProps} />,
     sync: <SyncView {...commonProps} />,
     ops: <OpsView />,
+    report: <ReportsView />,
+    inbox: <InboxView />,
   }[activeView];
 
   return (
@@ -236,7 +243,7 @@ function Workbench() {
           >
             <SlidersHorizontal size={16} /><span>筛选</span>{hasFilters && <i />}
           </button>
-          <button className="icon-button notification-button" aria-label="通知中心待接入" title="通知中心待接入" disabled><Bell size={18} /><i /></button>
+          <NotifyBell onOpenInbox={() => navigate("inbox")} />
           <div className="avatar" role="img" aria-label="当前用户 SA">SA</div>
         </header>
 

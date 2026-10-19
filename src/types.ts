@@ -11,7 +11,9 @@ export type ViewId =
   | "documents"
   | "yunqi"
   | "sync"
-  | "ops";
+  | "ops"
+  | "report"
+  | "inbox";
 
 export interface CountRow {
   name: string;
