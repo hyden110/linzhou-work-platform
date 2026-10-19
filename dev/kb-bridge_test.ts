@@ -345,28 +345,44 @@ test("summary success path: qodercli JSON parsed, single-flight enforced", async
     }));
     const hitInput = [{ sourceId: "src-a", id: "a1", title: "甲科技方案", space: "甲科技", source: "甲科技知识库", snippet: "片段" }];
 
-    const first = bridge.summary("全栈 AI 怎么建？", hitInput);
-    let secondRejected = false;
-    try {
-      await bridge.summary("第二个问题", hitInput);
-    } catch (error) {
-      secondRejected = error instanceof KbBridgeError && error.code === "kb_summary_failed"
-        && /上一个总结/.test(error.message);
+    // 交错容忍（评审 P3-1 根因）：闸门置位在 bridge.summary 内部若干 await（配置/来源
+    // fs 读取）之后，两次并发调用谁先赢得单飞取决于 IO 交错。语义只保证「恰有一个
+    // 在跑、另一个在闸门处被拒」，不保证调用顺序——按此断言，两种交错都成立。
+    // handler 必须随创建同步挂上：败者可能在 spin 等待期间就被闸门拒绝，
+    // 迟挂 handler 会触发 unhandledRejection（node --test 判失败）。
+    const settle = (p: Promise<{ answer: string; ms: number; degraded: boolean }>) =>
+      p.then(
+        (v) => ({ ok: true as const, v }),
+        (e: unknown) => ({ ok: false as const, e }),
+      );
+    const first = settle(bridge.summary("全栈 AI 怎么建？", hitInput));
+    const second = settle(bridge.summary("第二个问题", hitInput));
+    for (let spins = 0; spins < 2500 && calls.length < 1; spins += 1) {
+      await new Promise<void>((resolve) => { setTimeout(resolve, 2); });
     }
     release();
-    const done = await first;
+    const settled = await Promise.all([first, second]);
+    const rejected = settled.filter((r) => !r.ok);
+    const fulfilled = settled.filter((r) => r.ok);
+    assert.equal(rejected.length, 1, "并发两调用恰有一个被 RUNNING 闸门拒绝");
+    assert.equal(fulfilled.length, 1, "恰有一个成功返回");
+    const rejection = (rejected[0] as { ok: false; e: unknown }).e;
+    assert.ok(rejection instanceof KbBridgeError
+      && rejection.code === "kb_summary_failed"
+      && /上一个总结/.test(rejection.message),
+      "被拒一侧的错误形态：kb_summary_failed + 上一个总结还在生成");
+    const done = (fulfilled[0] as { ok: true; v: { answer: string; ms: number; degraded: boolean } }).v;
     assert.equal(done.answer, "按 [1] 的方案落地。");
     assert.equal(done.ms, 42);
     assert.equal(done.degraded, false);
-    assert.equal(secondRejected, true, "concurrent summary must be rejected");
-    // 第二次在 RUNNING 闸门处被拒，从未触达 CLI。
+    // 单飞：qodercli 只被调用一次（被拒一侧从未触达 CLI）。
     assert.equal(calls.length, 1);
     assert.equal(calls[0]!.file, "qodercli");
     assert.ok(calls[0]!.args.every((arg) => typeof arg === "string"), "CLI args stay an array of strings");
     assert.deepEqual(calls[0]!.args.slice(0, 4), ["-p", "--tools", "", "-o"]);
     assert.ok(calls[0]!.timeoutMs > 0);
     assert.match(calls[0]!.stdin ?? "", /甲科技方案/);
-    assert.match(calls[0]!.stdin ?? "", /全栈 AI 怎么建/);
+    assert.match(calls[0]!.stdin ?? "", /(全栈 AI 怎么建|第二个问题)/, "胜出调用的查询进入 prompt（不假设先后）");
   });
 });
 
