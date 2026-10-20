@@ -354,21 +354,26 @@ test("summary success path: qodercli JSON parsed, single-flight enforced", async
     // 在跑、另一个在闸门处被拒」，不保证调用顺序——按此断言，两种交错都成立。
     // handler 必须随创建同步挂上：败者可能在 spin 等待期间就被闸门拒绝，
     // 迟挂 handler 会触发 unhandledRejection（node --test 判失败）。
+    let settledCount = 0;
     const settle = (p: Promise<{ answer: string; ms: number; degraded: boolean }>) =>
       p.then(
-        (v) => ({ ok: true as const, v }),
-        (e: unknown) => ({ ok: false as const, e }),
+        (v) => { settledCount += 1; return { ok: true as const, v }; },
+        (e: unknown) => { settledCount += 1; return { ok: false as const, e }; },
       );
     const first = settle(bridge.summary("全栈 AI 怎么建？", hitInput));
     const second = settle(bridge.summary("第二个问题", hitInput));
-    // 等胜者真实进入 CLI（阻塞在 blocked 上）；不设过短上限——单飞若损坏
-    // （两侧都进 CLI），calls.length 会 ≥1 使循环退出并走断言失败，绝不挂死。
+    // 等两件事都成为事实再 release：①胜者真实进入 CLI（阻塞在 blocked 上）；
+    // ②败者已到达闸门并落定。只等①时，全量并行下败者的前置 fs 读取可能慢于
+    // 胜者整段路径，release 后胜者先完成、闸门复位，败者再进来就会合法通过
+    // （顺序执行而非并发），导致误报——V2-1 复跑 1/3 偶发即此。
+    // 单飞若损坏（两侧都进 CLI），第二个调用不阻塞会自行落定，循环同样退出走断言失败，绝不挂死。
     let spins = 0;
-    while (calls.length < 1 && spins < 15000) {
+    while ((calls.length < 1 || settledCount < 1) && spins < 15000) {
       await new Promise<void>((resolve) => { setTimeout(resolve, 2); });
       spins += 1;
     }
-    assert.ok(calls.length >= 1, "并发期间应有恰一个调用真实进入 CLI（15s 内）");
+    assert.ok(calls.length >= 1, "并发期间应有恰一个调用真实进入 CLI（30s 内）");
+    assert.ok(settledCount >= 1, "败者应在胜者阻塞期间于闸门处落定（30s 内）");
     release();
     const settled = await Promise.all([first, second]);
     const rejected = settled.filter((r) => !r.ok);
