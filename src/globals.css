@@ -1058,3 +1058,36 @@ select { padding: 6px 28px 6px 9px; }
 .agents-boundary li { display: flex; align-items: center; gap: 8px; color: var(--text-dim); font-size: 11px; line-height: 1.6; }
 .agents-boundary li svg { flex: none; color: var(--text-dim); }
 .agents-boundary li strong { color: var(--text-soft); font-weight: 500; }
+
+/* ===========================================================================
+   已发布案例库增强（F3+）：统计行 + 分面筛选（只列现存值）+ 关键词排序 + 只读预览。
+   行结构复用 .history-item，只沿用既有 token 与屋内既有字面量惯例，不引入新色值。
+   =========================================================================== */
+.cases-stats { display: flex; flex-wrap: wrap; gap: 7px; margin: 13px 18px 0; }
+.cases-stat { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; color: var(--text-dim); background: var(--panel-2); font-size: 10px; white-space: nowrap; }
+.cases-stat__main { display: inline-flex; align-items: baseline; gap: 5px; color: var(--text-soft); }
+.cases-stat__main b { color: var(--mint-soft); font: 600 13px ui-monospace, monospace; }
+.cases-stat i { color: var(--text-dim); font-size: 9px; font-style: normal; }
+.cases-stat.is-warn .cases-stat__main b { color: var(--amber); }
+
+.cases-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 12px 18px 0; color: var(--text-dim); font-size: 10px; }
+.cases-filters select { max-width: 160px; padding: 5px 8px; border: 1px solid var(--line-bright); border-radius: 6px; color: var(--text); background: var(--panel-2); font-size: 11px; outline: 0; }
+.cases-filters__search input { width: min(200px, 100%); padding: 5px 8px; border: 1px solid var(--line-bright); border-radius: 6px; color: var(--text); background: var(--panel-2); font-size: 11px; outline: 0; }
+.cases-filters__count { margin-left: auto; color: var(--text-dim); font: 10px ui-monospace, monospace; }
+
+.cases-item { overflow: hidden; }
+.cases-list { padding-bottom: 14px; }
+.cases-list__empty { padding: 14px 18px; }
+.cases-preview { padding: 0 12px 12px; }
+.cases-preview dl { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px 16px; margin: 0; padding: 10px 12px; border-top: 1px dashed var(--line); background: rgba(255,255,255,.012); }
+.cases-preview div { min-width: 0; }
+.cases-preview dt { color: var(--text-dim); font: 9px ui-monospace, monospace; letter-spacing: .05em; }
+.cases-preview dd { margin: 2px 0 0; color: var(--text-soft); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.cases-preview__link { display: inline-flex; align-items: center; gap: 5px; margin: 8px 12px 0; color: var(--mint); font-size: 11px; }
+.cases-preview__nolink { margin: 8px 12px 0; color: var(--text-dim); font-size: 10px; line-height: 1.6; }
+
+@media (max-width: 720px) {
+  .cases-filters select { max-width: 130px; }
+  .cases-filters__search input { width: 100%; }
+  .cases-filters__count { margin-left: 0; }
+}
