@@ -13,6 +13,8 @@
     "build": "tsc --noEmit && node scripts/build.mjs",
     "preview": "vite preview --host 127.0.0.1",
     "setup:ai": "node scripts/setup-cloud-agent.mjs",
+    "init": "node --experimental-strip-types --disable-warning=ExperimentalWarning --env-file-if-exists=.env.local scripts/workbench-init.mjs",
+    "doctor": "node --experimental-strip-types --disable-warning=ExperimentalWarning --env-file-if-exists=.env.local scripts/workbench-doctor.mjs",
     "dev:function": "node --env-file-if-exists=.env.local --experimental-strip-types dev/function-local-node.ts",
     "test:function": "node --experimental-strip-types --test functions/*_test.ts",
     "test:dev": "node --experimental-strip-types --test dev/*_test.ts",
