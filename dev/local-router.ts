@@ -35,6 +35,9 @@ import { createOkrBridge } from "./okr-bridge.ts";
 import { createReplyBridge } from "./reply-bridge.ts";
 import { createDataSourceBridge } from "./datasource-bridge.ts";
 import { createGuidesBridge } from "./guides-bridge.ts";
+import { createAgentloopBridge } from "./agentloop-bridge.ts";
+import { createReportWriteBridge } from "./report-bridge.ts";
+import { createWorklogBridge } from "./worklog-bridge.ts";
 
 /**
  * Router for the local-only endpoints that back the workbench's "open on this Mac",
@@ -153,6 +156,9 @@ export interface LocalRouterDependencies {
   readonly replyBridge?: ReturnType<typeof createReplyBridge>;
   readonly datasourceBridge?: ReturnType<typeof createDataSourceBridge>;
   readonly guidesBridge?: ReturnType<typeof createGuidesBridge>;
+  readonly agentloopBridge?: ReturnType<typeof createAgentloopBridge>;
+  readonly reportWriteBridge?: ReturnType<typeof createReportWriteBridge>;
+  readonly worklogBridge?: ReturnType<typeof createWorklogBridge>;
 }
 
 /** 稳定错误码 → HTTP 状态映射（report）：unconfigured=400（含参数/白名单拒绝），其余 502。 */
@@ -227,6 +233,9 @@ export function createLocalRouter(dependencies: LocalRouterDependencies) {
   const replyBridge = dependencies.replyBridge ?? createReplyBridge();
   const datasourceBridge = dependencies.datasourceBridge ?? createDataSourceBridge();
   const guidesBridge = dependencies.guidesBridge ?? createGuidesBridge();
+  const agentloopBridge = dependencies.agentloopBridge ?? createAgentloopBridge();
+  const reportWriteBridge = dependencies.reportWriteBridge ?? createReportWriteBridge();
+  const worklogBridge = dependencies.worklogBridge ?? createWorklogBridge();
   const allowedOrigins = new Set(dependencies.allowedOrigins ?? DEFAULT_ALLOWED_ORIGINS);
   const allowedHosts = new Set([
     `127.0.0.1:${dependencies.port}`,
@@ -795,7 +804,10 @@ export function createLocalRouter(dependencies: LocalRouterDependencies) {
     const delegated = await healthBridge.handle(request)
       ?? await replyBridge.handle(request)
       ?? await datasourceBridge.handle(request)
-      ?? await guidesBridge.handle(request);
+      ?? await guidesBridge.handle(request)
+      ?? await agentloopBridge.handle(request)
+      ?? await reportWriteBridge.handle(request)
+      ?? await worklogBridge.handle(request);
     if (delegated) return delegated;
 
     return jsonResponse({ ok: false, error: "method_not_allowed" }, 405, { Allow: "GET, POST, DELETE" });

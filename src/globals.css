@@ -988,6 +988,40 @@ select { padding: 6px 28px 6px 9px; }
 .reports-doc header span { color: var(--text-dim); font: 9px ui-monospace, monospace; }
 .reports-doc__body { max-height: 460px; overflow: auto; margin: 0; padding: 12px; color: var(--text-soft); font: 11px/1.75 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 
+/* ---- F6-P1 日报回写：编辑区 / 动作条 / 状态行 / diff 弹窗 / 审计表（沿用暗色薄荷 token） ---- */
+.reports-edit { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px 16px; margin: 0 0 12px; }
+.reports-edit__item { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.reports-edit__label { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; color: var(--text-dim); font: 9px ui-monospace, monospace; letter-spacing: .05em; }
+.reports-edit__count { flex: none; color: var(--text-dim); font: 9px ui-monospace, monospace; font-style: normal; }
+.reports-edit__count[data-over="yes"] { color: var(--danger); }
+.reports-edit__area { width: 100%; min-width: 0; min-height: 46px; padding: 7px 9px; resize: vertical; border: 1px solid var(--line-bright); border-radius: 6px; color: var(--text); background: #0a1114; font-family: inherit; font-size: 11px; line-height: 1.55; outline: 0; overflow-wrap: anywhere; }
+.reports-edit__area:focus { border-color: rgba(67, 225, 180, .45); }
+.reports-edit__area:disabled { opacity: .55; cursor: default; }
+.reports-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 10px; }
+.reports-actions__hint { margin-right: auto; color: var(--text-dim); font-size: 10px; }
+.reports-status { display: flex; align-items: flex-start; gap: 7px; margin: 0; padding: 8px 11px; border: 1px solid var(--line); border-radius: 6px; font-size: 11px; line-height: 1.6; }
+.reports-status svg { flex: none; margin-top: 2px; }
+.reports-status--ok { color: var(--mint-soft); border-color: rgba(67, 225, 180, .28); background: rgba(67, 225, 180, .06); }
+.reports-status--warn { color: #ebc584; border-color: rgba(240, 187, 98, .28); background: rgba(240, 187, 98, .06); }
+.reports-status--err { color: var(--danger); border-color: rgba(236, 123, 115, .3); background: rgba(236, 123, 115, .06); }
+.reports-diff { display: grid; gap: 8px; max-height: 46vh; overflow: auto; }
+.reports-diff__item { border: 1px solid var(--line); border-radius: 6px; background: rgba(255, 255, 255, .012); }
+.reports-diff__field { display: block; padding: 5px 9px; border-bottom: 1px solid var(--line); color: var(--text-dim); font: 9px ui-monospace, monospace; letter-spacing: .05em; }
+.reports-diff__cols { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--line); }
+.reports-diff__before, .reports-diff__after { margin: 0; padding: 7px 9px; background: var(--panel-2); font: 11px/1.6 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.reports-diff__before { color: var(--text-dim); }
+.reports-diff__after { color: var(--mint-soft); }
+.reports-writes__scroll { max-height: 340px; overflow: auto; border: 1px solid var(--line); border-radius: 7px; }
+.reports-writes { width: 100%; border-collapse: collapse; font-size: 10px; }
+.reports-writes th { position: sticky; top: 0; padding: 6px 9px; border-bottom: 1px solid var(--line); background: var(--panel-2); color: var(--text-dim); font: 9px ui-monospace, monospace; letter-spacing: .05em; text-align: left; }
+.reports-writes td { padding: 5px 9px; border-bottom: 1px solid var(--line); color: var(--text-soft); vertical-align: top; }
+.reports-writes tbody tr:last-child td { border-bottom: 0; }
+.reports-writes tr[data-ok="no"][data-executed="yes"] td { color: var(--danger); }
+.reports-writes tr[data-executed="no"] td { color: var(--text-dim); }
+.reports-writes__at { white-space: nowrap; color: var(--text-dim); font-family: ui-monospace, monospace; }
+.reports-writes__target { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reports-writes__preview { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); }
+
 /* ---- 消息铃铛 + 面板 / 收件箱 ---- */
 .ntf-root { position: relative; }
 .notification-button { position: relative; }

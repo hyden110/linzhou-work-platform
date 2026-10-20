@@ -148,7 +148,7 @@ function buildViewCapabilities(ctx: CapabilityContext): readonly CapabilityRow[]
     { id: "lifecycle", name: "PPL 跟进", description: "在途项目按客户分组、巡检与分层视图（只读）" },
     { id: "okr", name: "OKR 目标", description: "CRD 目标树 / 进展编辑 / dry-run 后逐项确认回写" },
     { id: "leads", name: "拓新雷达", description: "dws aitable 只读拉取的拓新线索分桶" },
-    { id: "report", name: "日周报", description: "当日草稿 / 提交状态 / 双周报目录与 automations 探测（只读）" },
+    { id: "report", name: "日周报", description: "当日草稿编辑与两步回写 / 提交 outbox / 双周报 / worklog 采集分类" },
     { id: "inbox", name: "消息中心", description: "本机收件箱（测试生产者 + 已读位）" },
     { id: "overview", name: "总览", description: "本地索引概览与入口（纯本地元数据）" },
     { id: "ask", name: "AI 问答", description: "本地受控证据问答 + 外部知识库检索" },
@@ -158,18 +158,18 @@ function buildViewCapabilities(ctx: CapabilityContext): readonly CapabilityRow[]
     { id: "yunqi", name: "云栖大会", description: "本机整理稿解析的六层趋势与论坛" },
     { id: "sync", name: "同步中心", description: "数据源健康、手动同步与环境体检" },
     { id: "ops", name: "运营推广", description: "运营摘要 / 推广卡片 / 微信登记（摘要只读）" },
-    { id: "agents", name: "数字员工", description: "QoderWake daemon / AgentLoop 观测 / 微信快照（全只读）" },
+    { id: "agents", name: "数字员工", description: "QoderWake daemon / AgentLoop 观测与凭据管理 / SLS 出票（凭据掩码）" },
     { id: "ontology", name: "本体管理", description: "知识本体策展操作日志 + 派生图 + 审计（本地读写）" },
     { id: "profile", name: "个人中心", description: "BUC 会话管理与判活（cookie 仅掩码展示，0600 存储）" },
     { id: "datasources", name: "数据源管理", description: "数据源注册表 / 分组刷新 / env 与接入向导（写操作两步确认）" },
     { id: "settings", name: "设置", description: "能力清单、配置状态、数据新鲜度与演示模式（本页）" },
   ];
   const notes: Readonly<Record<string, string>> = {
-    report: "日报回写 / 提交未开通（见全局能力）",
+    report: "回写走 save-dry→save-confirm、提交走 submit-dry→submit-confirm 两步链路；5 分钟冷却内不重发；worklog 仅只读采集",
     okr: "回写走 dry-run → 逐项确认两步链路；未配置 CRD 会话时如实引导，不伪造目标数据",
     inbox: "回复需本机 dws CLI；建议生成需本机 qoder CLI，缺失时如实提示 engine_missing",
     ask: "未配置百炼密钥时自动降级为关键词检索（实际配置见下方体检）",
-    agents: "凭据管理与出票未开通（见全局能力）",
+    agents: "凭据 0600 掩码管理（只报已设置/未设置）；出票走 ticket-dry→ticket-confirm 单次消费 token，审计掩码留痕",
     profile: "判活需先粘贴 BUC 会话；未设置时视图如实引导，chrome 自动提取未接入",
     datasources: "刷新仅 supported 分组；建表与续期均需确认闸门，密钥类配置只报「已设置/未设置」",
   };
@@ -182,9 +182,9 @@ function buildViewCapabilities(ctx: CapabilityContext): readonly CapabilityRow[]
 function buildGlobalCapabilities(ctx: CapabilityContext): readonly CapabilityRow[] {
   const kb = kbCapability(ctx);
   const writePending: readonly CapabilityRow[] = [
-    { id: "write-report", name: "日报回写（草稿保存 / 提交）", description: "保存日报草稿、提交日报到 CRM / AI 表", status: "pending-auth", note: "本台未开通：日周报视图仅只读展示当日草稿、提交状态与周报目录" },
+    { id: "write-report", name: "日报回写（草稿保存 / 提交）", description: "保存日报草稿、提交日报到 CRM / AI 表", status: "available", note: "已接通：白名单字段 save-dry→save-confirm 两步回写（recordId 冲突 409 不覆盖）；提交走 submit-dry→submit-confirm + outbox 去重 + 5 分钟冷却，成败均回读校验并留 writes.jsonl 掩码审计" },
     { id: "write-reply", name: "消息中心真实回复", description: "从收件箱直接回复钉钉群消息", status: "available", note: "已接通：建议生成走本机 qoder CLI（缺失时如实 engine_missing，不回落云端）；发送走 dws chat message send，且弹窗 confirm 必须严格等于候选 id 才执行，每次真实尝试留 sends.jsonl 审计" },
-    { id: "write-agentloop", name: "AgentLoop 凭据与出票", description: "管理 AgentLoop 凭据、连接测试与工单出票", status: "pending-auth", note: "凭据表单 / 连接测试 / 工单出票均未实现：数字员工视图仅观测状态" },
+    { id: "write-agentloop", name: "AgentLoop 凭据与出票", description: "管理 AgentLoop 凭据、连接测试与工单出票", status: "available", note: "已接通：凭据 0600 存储且只报掩码/已设置；连接测试只读 listLogstores；出票 ticket-dry→ticket-confirm（confirm 严格 === 一次性 token，单次消费），cn-shanghai HMAC-SHA1 签名，成败均落掩码审计" },
     { id: "write-okr", name: "OKR 进展回写（CRD）", description: "把本地进展编辑回写到 CRD OKR", status: "available", note: "已接通：先 dry-run 出差异，再按 keys 逐项确认回写；冲突需显式 acceptConflicts，未配置 BUC 会话时如实引导不伪造数据" },
     { id: "write-provision", name: "数据源建表 / 凭据续期", description: "接入向导里的 aitable 建表与体检里的凭据续期", status: "available", note: "已接通：needConfirm 步必须 body.confirm === true（严格布尔）；terminal 步只回显命令文本，绝不代跑子进程" },
     { id: "write-dingtalk", name: "钉钉真实发送（运营卡片推送）", description: "运营推广卡片真实推送到钉钉群", status: "pending-auth", note: "OPS_DINGTALK_PUSH_ENABLED 默认关：需在本机显式开启后走两步确认推送" },

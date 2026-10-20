@@ -21,17 +21,21 @@ import {
   type WechatSnapshotView,
 } from "../../lib/agents-client";
 import { ViewHeading } from "../shared";
+import { AgentloopOpsPanel } from "./AgentloopOpsPanel";
 
 /**
- * 「数字员工」视图（F7，全只读、链接呈现为主）：三块合一——
+ * 「数字员工」视图（F7，观测只读 + AgentLoop 凭据/出票写口）：四块合一——
  * - QoderWake daemon 状态卡：本机只读健康探测（读端口文件 + GET /api/health），
  *   Console / Wakers / Knowledge / Conversations 一律新窗口外链。绝不做 iframe 内嵌：
  *   静态台已记录内嵌 Console 有「401 → 跳登录 → 回跳」死循环问题；
  * - AgentLoop 观测状态卡：凭据只读「存在性与掩码」（绝无 AK/SK 明文）+ console 外链 +
- *   views 列表；凭据配置与出票「待授权，本台未开通」；
+ *   views 列表；
+ * - AgentLoop 凭据与出票卡（本批新增，唯一写入口）：凭据只写不回显（0600 存储）、
+ *   连接测试诚实三态、出票两步确认闸门（dry 预检 → 弹窗逐条勾选 → confirm）+ 审计折叠区；
  * - 微信办公快照卡：只读统计白名单投影（无消息内容），实时群台账 / @我待办由
  *   静态台本机常驻同步维护，本台仅展示快照。
- * 红线：无任何写入口，无 iframe 内嵌，无轮询 / SSE / 定时器——打开视图拉取 + 显式刷新。
+ * 红线：观测卡无任何写入口，无 iframe 内嵌，无轮询 / SSE / 定时器——打开视图拉取 + 显式刷新；
+ * 出票属外部写，服务端闸门（confirm 严格 === dry token）+ append-only 审计兜底。
  */
 
 const DAEMON_STATUS_LABEL: Record<AgentsWakeState["daemon"]["status"], string> = {
@@ -172,7 +176,7 @@ function AgentloopPanel() {
       <PanelHeader eyebrow="AGENTLOOP / OBSERVABILITY" title="AgentLoop 观测" loading={loading} onRefresh={load} />
       <p className="history-panel__note">
         <ShieldCheck size={13} /> 只读观测：本台只读凭据「存在性与掩码」（照静态台 maskAk 口径），
-        绝不读取 / 透出 AK/SK 明文；<strong>{status?.writesNote || "凭据管理与出票：待授权，本台未开通"}</strong>。
+        绝不读取 / 透出 AK/SK 明文；<strong>{status?.writesNote || "凭据管理与出票：见下方「凭据与出票」面板（唯一写入口）"}</strong>。
       </p>
       {error !== null && (
         <div className="answer-warning"><AlertCircle size={15} /> {agentsErrorMessage(error)}</div>
@@ -303,22 +307,24 @@ export function AgentsView() {
       <ViewHeading
         eyebrow="AGENT OPS / DIGITAL WORKERS"
         title="数字员工"
-        description="QoderWake daemon 状态、AgentLoop 观测与微信办公快照的三块合一只读视图；Console 等入口以新窗口外链呈现，本台不做内嵌、不做凭据管理、不出票。"
+        description="QoderWake daemon 状态、AgentLoop 观测与微信办公快照的只读视图，外加 AgentLoop 凭据与出票的唯一写入口；Console 等入口以新窗口外链呈现，本台不做内嵌，出票走两步确认闸门。"
         aside={<Cpu size={22} strokeWidth={1.6} />}
       />
       <WakePanel />
       <AgentloopPanel />
+      <AgentloopOpsPanel />
       <section className="panel agents-panel" aria-label="数字员工边界">
         <div className="panel__header">
           <div>
-            <span className="eyebrow">BOUNDARY / READ-ONLY</span>
+            <span className="eyebrow">BOUNDARY / READ-ONLY + GATED WRITE</span>
             <h2>能力边界</h2>
           </div>
         </div>
         <ul className="agents-boundary">
-          <li><Bot size={14} /> 凭据管理与 CreateTicket 出票：待授权，本台未开通（不写 keychain、不联网出票）。</li>
+          <li><Bot size={14} /> AgentLoop 凭据管理：已开通——只写不回显（0600 存储 / 0700 目录），任何接口只出掩码；连接测试仅 SLS 只读探活。</li>
+          <li><Bot size={14} /> CreateTicket 出票：已开通——属外部写，dry 预检 + 弹窗逐条勾选的服务端两步闸门，审计 append-only，票据明文不回显。</li>
           <li><MessagesSquare size={14} /> 微信群-客户绑定管理、消息解密与常驻同步：属静态台重能力，本台未开通。</li>
-          <li><Cpu size={14} /> 本台唯一网络动作是本机 daemon 的 GET /api/health 健康探测（≤5s），无任何写命令。</li>
+          <li><Cpu size={14} /> 其余网络动作只有本机 daemon 的 GET /api/health 健康探测（≤5s），无任何其他写命令。</li>
         </ul>
       </section>
     </div>
