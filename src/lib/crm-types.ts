@@ -40,6 +40,30 @@ export interface SourceStatus {
   queriedAt?: string | null;
 }
 
+/** MaaS 候选初筛（D4）证据：只记录命中了哪个关键词、在客户名还是项目名上。 */
+export interface MaasCandidateEvidence {
+  source: "customer" | "project";
+  name: string;
+  keywords: string[];
+}
+
+/** 候选只标「疑似 maas」，不硬判；最终分类以人工覆盖表（maas-overrides）为准。 */
+export interface MaasCandidate {
+  cid: string;
+  customerName: string;
+  suggestion: "maas";
+  evidence: MaasCandidateEvidence[];
+}
+
+export interface MaasCandidatesFile {
+  schemaVersion: 1;
+  generatedAt: string;
+  readOnly: true;
+  /** 快照客户总数（覆盖率分母口径），含无 PPL 客户。 */
+  totalCustomers: number;
+  candidates: MaasCandidate[];
+}
+
 export interface AgendaItem {
   id: string;
   title: string;

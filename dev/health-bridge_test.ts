@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -254,6 +254,49 @@ test("bridges aggregate eight rows from injected read-only probes with honest st
       assert.deepEqual(Object.keys(row).sort(), ["detail", "name", "state"]);
     }
   });
+});
+
+test("maas row reads manual override count / corrupt state from the injected read-only probe", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(join(dir, "crm-snapshot.json"), JSON.stringify({ schemaVersion: 1 }), "utf-8");
+    let probeCalls = 0;
+    const withState = (state: { overrides: Record<string, string>; source: string }): HealthBridge => createHealthBridge({
+      now: () => Date.parse("2026-10-20T02:00:00.000Z"),
+      env: {},
+      run: okRunner,
+      cacheDir: dir,
+      casesConfigPath: join(dir, "absent-cases.json"),
+      ...healthyBridgeFakes(),
+      kbConfig: healthyBridgeFakes().kbConfig as never,
+      maasOverrides: async () => {
+        probeCalls += 1;
+        return state as never;
+      },
+    });
+
+    const ok = rowOf(await withState({ overrides: { "9900000001": "maas", "9900000002": "non_maas" }, source: "local" }).snapshot(), "bridges", "maas");
+    assert.equal(ok.state, "ok");
+    assert.match(ok.detail, /人工覆盖 2 条/);
+    assert.doesNotMatch(ok.detail, /9900/, "只报计数，cid 不进快照");
+
+    const corrupt = rowOf(await withState({ overrides: {}, source: "corrupt" }).snapshot(), "bridges", "maas");
+    assert.equal(corrupt.state, "error");
+    assert.match(corrupt.detail, /损坏/);
+    assert.equal(probeCalls, 2, "每次体检只调只读覆盖表探针一次");
+
+    // 未注入探针 → 保持旧口径（只判快照存在性），不凭空造计数。
+    const legacy = rowOf(await createTestBridge({ cacheDir: dir, casesConfigPath: join(dir, "absent-cases.json") }).snapshot(), "bridges", "maas");
+    assert.equal(legacy.state, "ok");
+    assert.doesNotMatch(legacy.detail, /人工覆盖/);
+  });
+});
+
+test("router wires only the maas bridge read-only override state into the health bridge (static assertion)", async () => {
+  // 静态断言：不实例化默认体检桥（那会探测真实 CLI 与 .local-cache），只核对接线。
+  const source = await readFile(new URL("./local-router.ts", import.meta.url), "utf-8");
+  const wiring = source.slice(source.indexOf("createHealthBridge({"), source.indexOf("});", source.indexOf("createHealthBridge({")));
+  assert.match(wiring, /maasOverrides:\s*maasBridge\.overridesState,/);
+  assert.doesNotMatch(wiring, /candidates/, "体检绝不接入会写盘的 candidates()");
 });
 
 test("a throwing bridge probe degrades to its own error row with a redacted reason", async () => {

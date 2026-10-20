@@ -7,7 +7,7 @@ import { createFbiMetricsBridge } from "../fbi-metrics-bridge.ts";
 import { createKbBridge } from "../kb-bridge.ts";
 import { createOpsBridge } from "../ops-bridge.ts";
 import { createPplInspectionBridge } from "../ppl-inspection-bridge.ts";
-import { collectBridges } from "./health-bridges.ts";
+import { collectBridges, type MaasOverridesProbe } from "./health-bridges.ts";
 import {
   CLI_SPECS,
   DEFAULT_CLI_TIMEOUT_MS,
@@ -42,6 +42,8 @@ export interface HealthBridgeOptions {
     readonly sources: readonly { readonly enabled: boolean; readonly type: string }[];
   }>;
   readonly opsDigest?: () => Promise<unknown | undefined>;
+  /** 可选只读依赖：MaaS 覆盖表状态（不缺省实例化，未注入则 maas 行只判快照）。 */
+  readonly maasOverrides?: () => Promise<MaasOverridesProbe>;
 }
 
 export interface HealthBridge {
@@ -95,6 +97,7 @@ export function createHealthBridge(options: HealthBridgeOptions = {}): HealthBri
           pplInspection,
           kbConfig,
           opsDigest,
+          maasOverrides: options.maasOverrides,
           maasSnapshotPath: join(cacheDir, "crm-snapshot.json"),
           casesConfigPath,
         }),

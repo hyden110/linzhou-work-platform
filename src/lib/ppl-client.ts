@@ -1,9 +1,13 @@
+import type { MaasCandidatesFile } from "./crm-types";
+
 const SAFE_ERRORS = new Set([
   "inspection_unavailable",
   "invalid_request",
   "not_found",
   "already_decided",
   "blocked_recommendation",
+  "snapshot_unavailable",
+  "overrides_corrupt",
   "rate_limited",
   "origin_not_allowed",
   "host_not_allowed",
@@ -160,6 +164,101 @@ export async function decidePplRecommendation(
   return { ...payload.data, fingerprint: payload.data.fingerprint ?? null };
 }
 
+// ---------------------------------------------------------------------------
+// MaaS 候选复核（D4）：候选生成 + 人工覆盖表（本机优先，回退 public 静态表）
+// ---------------------------------------------------------------------------
+
+export type MaasOverrideStatus = "maas" | "non_maas" | "unconfirmed";
+/** 覆盖表只存 maas/non_maas；unconfirmed 表示「清除覆盖、回到关键词初筛」。 */
+export type MaasOverridesMap = Record<string, "maas" | "non_maas">;
+
+function isCandidatesFile(value: unknown): value is MaasCandidatesFile {
+  return isRecord(value)
+    && value.schemaVersion === 1
+    && typeof value.generatedAt === "string"
+    && typeof value.totalCustomers === "number"
+    && Array.isArray(value.candidates)
+    && value.candidates.every((item: unknown) => isRecord(item) && typeof item.cid === "string");
+}
+
+/** 只认 maas/non_maas，其余值（含非法类型）一律丢弃；缺失/非法 → 空表。 */
+function sanitizeOverrides(raw: unknown): MaasOverridesMap {
+  const overrides: MaasOverridesMap = {};
+  if (!isRecord(raw)) return overrides;
+  for (const [cid, value] of Object.entries(raw)) {
+    if (cid && (value === "maas" || value === "non_maas")) overrides[cid] = value;
+  }
+  return overrides;
+}
+
+/** GET /local/crm/maas-candidates —— 快照缺失/非法时后端 404（snapshot_unavailable）。 */
+export async function fetchMaasCandidates(fetchImpl: typeof fetch = fetch): Promise<MaasCandidatesFile> {
+  const payload = await request("/local/crm/maas-candidates", { method: "GET" }, fetchImpl);
+  if (!isCandidatesFile(payload.data)) throw new PplClientError("invalid_response");
+  return payload.data;
+}
+
+/** GET /local/crm/maas-overrides —— 服务端已做「本机 → public → 空表」回退。 */
+export async function fetchMaasOverrides(fetchImpl: typeof fetch = fetch): Promise<MaasOverridesMap> {
+  const payload = await request("/local/crm/maas-overrides", { method: "GET" }, fetchImpl);
+  return sanitizeOverrides((payload.data as { overrides?: unknown } | undefined)?.overrides);
+}
+
+/** 服务端覆盖表来源；corrupt = 本机文件存在但损坏（保存会被 409 拒绝）。 */
+export type MaasOverridesSource = "local" | "public" | "empty" | "corrupt";
+
+export interface MaasOverridesState {
+  readonly overrides: MaasOverridesMap;
+  /** 未知/缺失（旧服务端）→ null，不臆造来源。 */
+  readonly source: MaasOverridesSource | null;
+}
+
+const OVERRIDE_SOURCES: readonly string[] = ["local", "public", "empty", "corrupt"];
+
+/** GET /local/crm/maas-overrides —— 带来源标记，用于识别「本机覆盖表损坏」。 */
+export async function fetchMaasOverridesState(fetchImpl: typeof fetch = fetch): Promise<MaasOverridesState> {
+  const payload = await request("/local/crm/maas-overrides", { method: "GET" }, fetchImpl);
+  const data = isRecord(payload.data) ? payload.data : {};
+  const source = typeof data.source === "string" && OVERRIDE_SOURCES.includes(data.source)
+    ? data.source as MaasOverridesSource
+    : null;
+  return { overrides: sanitizeOverrides(data.overrides), source };
+}
+
+/** 复核下拉的占位值：非人工覆盖行以「初筛：…」为当前值，选 MaaS 才是真实变更。 */
+export const MAAS_SCREEN_VALUE = "screen";
+
+export interface MaasReviewSelection {
+  readonly value: MaasOverrideStatus | typeof MAAS_SCREEN_VALUE;
+  readonly placeholder: string | null;
+}
+
+export function maasReviewSelection(decision: { readonly status: string; readonly basis: string }): MaasReviewSelection {
+  if (decision.basis === "override" && (decision.status === "maas" || decision.status === "non_maas")) {
+    return { value: decision.status, placeholder: null };
+  }
+  return { value: MAAS_SCREEN_VALUE, placeholder: decision.basis === "keyword" ? "初筛：疑似" : "初筛：未分类" };
+}
+
+/** 下拉值 → 可保存状态；占位值/未知值返回 null（不触发保存）。 */
+export function maasReviewChoice(value: string): MaasOverrideStatus | null {
+  return value === "maas" || value === "non_maas" || value === "unconfirmed" ? value : null;
+}
+
+/** POST /local/crm/maas-overrides —— 保存后返回服务端最新覆盖表（保存后刷新即生效）。 */
+export async function saveMaasOverride(
+  cid: string,
+  status: MaasOverrideStatus,
+  fetchImpl: typeof fetch = fetch,
+): Promise<MaasOverridesMap> {
+  const payload = await request("/local/crm/maas-overrides", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ cid, status }),
+  }, fetchImpl);
+  return sanitizeOverrides((payload.data as { overrides?: unknown } | undefined)?.overrides);
+}
+
 export function pplErrorMessage(error: unknown): string {
   const code = error instanceof PplClientError ? error.code : "unavailable";
   const messages: Record<string, string> = {
@@ -168,6 +267,8 @@ export function pplErrorMessage(error: unknown): string {
     not_found: "推荐条目已过期，请刷新巡检。",
     already_decided: "该条已有决策。",
     blocked_recommendation: "金额缺失，补齐前不能同意创建。",
+    snapshot_unavailable: "还没有鲲鹏快照，候选生成不可用；仍可在下方手动分类。",
+    overrides_corrupt: "本机覆盖表损坏，请先修复 .local-cache/maas-overrides.json 后再保存。",
     rate_limited: "请求过于频繁，请稍后再试。",
     invalid_response: "本机服务返回了无法识别的数据。",
   };

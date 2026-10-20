@@ -1,6 +1,8 @@
 node_modules/
 dist/
 .local-cache/
+# MaaS 人工覆盖表含真实 CID，只允许存在于 .local-cache（上面的目录规则已覆盖，显式声明防手滑）。
+.local-cache/maas-overrides.json
 # 检索包含 1879 篇真实客户资料（18.7 MB），只保留本机文件，绝不入库。
 functions/retrieval-bundle.json
 # FBI 运行产物（会话、日报、缓存）只在本机，不进仓库。

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Search } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChevronDown, ChevronRight, Search } from "lucide-react";
 import {
   customerLifecycle,
   filterFollowupByStage,
@@ -7,14 +7,39 @@ import {
   projectsByCustomer,
 } from "../../lib/crm-model";
 import type { CustomerLifecycle, MaasOverrides, MaasStatus, PplFollowupCustomer } from "../../lib/crm-model";
-import type { ProjectItem } from "../../lib/crm-types";
+import type { MaasCandidatesFile, ProjectItem } from "../../lib/crm-types";
+import {
+  PplClientError,
+  MAAS_SCREEN_VALUE,
+  fetchMaasCandidates,
+  fetchMaasOverridesState,
+  maasReviewChoice,
+  maasReviewSelection,
+  pplErrorMessage,
+  saveMaasOverride,
+} from "../../lib/ppl-client";
+import type { MaasOverrideStatus } from "../../lib/ppl-client";
 import { ViewHeading } from "../shared";
 import { useCrm } from "./CrmProvider";
 import { CustomerDrawer } from "./CustomerDrawer";
 import { CrmGate, RefreshControl, SourceBanner, formatDateTime, formatGaap } from "./crm-shared";
 
-/** 人工覆盖表：public/data/maas-overrides.json（CID → maas/non_maas）；缺失或格式非法 → 空表（全走初筛）。 */
-async function loadMaasOverrides(): Promise<MaasOverrides> {
+/**
+ * 人工覆盖表加载：优先本机 .local-cache/maas-overrides.json（可写可审计），
+ * 本机服务不可用时回退 public/data/maas-overrides.json（保持 {}，无真实数据）。
+ * 本机覆盖表损坏时如实标记 corrupt（不静默回落），视图据此提示修复并暂停保存。
+ */
+async function loadMaasOverrides(): Promise<{ overrides: MaasOverrides; corrupt: boolean }> {
+  try {
+    const state = await fetchMaasOverridesState();
+    return { overrides: state.overrides, corrupt: state.source === "corrupt" };
+  } catch {
+    return { overrides: await loadStaticOverrides(), corrupt: false };
+  }
+}
+
+/** 本机服务不可用时的静态表回退（public 保持 {}）。 */
+async function loadStaticOverrides(): Promise<MaasOverrides> {
   try {
     const response = await fetch("/data/maas-overrides.json");
     if (!response.ok) return {};
@@ -93,15 +118,27 @@ export function PplFollowupView() {
   const [stageFilter, setStageFilter] = useState("");
   const [activeLane, setActiveLane] = useState<MaasStatus>("maas");
   const [overrides, setOverrides] = useState<MaasOverrides>({});
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [candidates, setCandidates] = useState<MaasCandidatesFile | null>(null);
+  const [candidatesState, setCandidatesState] = useState<"idle" | "loading" | "ready" | "unavailable">("idle");
+  const [savingCid, setSavingCid] = useState("");
+  const [reviewError, setReviewError] = useState("");
+  const [overridesCorrupt, setOverridesCorrupt] = useState(false);
   const closeDrawer = useCallback(() => setOpenCid(""), []);
+  // 取消标记：卸载后不再落 state（StrictMode 的挂载→卸载→挂载会重新置 true）。
+  const aliveRef = useRef(true);
 
   useEffect(() => {
+    aliveRef.current = true;
     let cancelled = false;
     void loadMaasOverrides().then((loaded) => {
-      if (!cancelled) setOverrides(loaded);
+      if (cancelled) return;
+      setOverrides(loaded.overrides);
+      setOverridesCorrupt(loaded.corrupt);
     });
     return () => {
       cancelled = true;
+      aliveRef.current = false;
     };
   }, []);
 
@@ -145,6 +182,50 @@ export function PplFollowupView() {
     ? Object.values(filtered.lanes).reduce((sum, lane) => sum + lane.reduce((count, row) => count + row.projects.length, 0), 0)
     : 0;
 
+  // 候选复核：列出全部快照客户（含无在途 PPL 的客户，不受泳道/搜索筛选影响），逐客户人工分类。
+  const reviewRows = useMemo(() => {
+    if (!board) return [];
+    return [...board.lanes.maas, ...board.lanes.non_maas, ...board.lanes.unconfirmed];
+  }, [board]);
+  const candidateByCid = useMemo(
+    () => new Map((candidates?.candidates ?? []).map((candidate) => [candidate.cid, candidate])),
+    [candidates],
+  );
+  const overrideCount = reviewRows.filter((row) => row.maas.basis === "override").length;
+
+  // 请求在事件处理里发起（不放进 setState 更新函数，StrictMode 不会双发）。
+  const toggleReview = useCallback(() => {
+    const next = !reviewOpen;
+    setReviewOpen(next);
+    if (!next || candidatesState !== "idle") return;
+    setCandidatesState("loading");
+    fetchMaasCandidates()
+      .then((file) => {
+        if (!aliveRef.current) return;
+        setCandidates(file);
+        setCandidatesState("ready");
+      })
+      .catch(() => {
+        if (aliveRef.current) setCandidatesState("unavailable");
+      });
+  }, [reviewOpen, candidatesState]);
+
+  const saveOverride = useCallback(async (cid: string, status: MaasOverrideStatus) => {
+    setSavingCid(cid);
+    setReviewError("");
+    try {
+      // 用服务端返回的最新覆盖表驱动看板重排：保存后立即生效，刷新页面亦然。
+      const saved = await saveMaasOverride(cid, status);
+      if (aliveRef.current) setOverrides(saved);
+    } catch (caught) {
+      if (!aliveRef.current) return;
+      if (caught instanceof PplClientError && caught.code === "overrides_corrupt") setOverridesCorrupt(true);
+      setReviewError(caught instanceof PplClientError ? pplErrorMessage(caught) : "保存未完成，请稍后重试。");
+    } finally {
+      if (aliveRef.current) setSavingCid("");
+    }
+  }, []);
+
   return (
     <div className="view-stack">
       <ViewHeading
@@ -174,6 +255,92 @@ export function PplFollowupView() {
                 <Search size={14} />
                 <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索客户" aria-label="搜索客户" />
               </label>
+            </section>
+
+            <section className="panel crm-maas-review" aria-label="MaaS 候选复核">
+              <header className="panel__header">
+                <div>
+                  <span className="eyebrow">MAAS REVIEW</span>
+                  <h2>
+                    <button className="text-button" onClick={toggleReview} aria-expanded={reviewOpen}>
+                      {reviewOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                      MaaS 候选复核
+                    </button>
+                  </h2>
+                </div>
+                <span>
+                  {customersReady && board
+                    ? `人工覆盖 ${overrideCount}/${reviewRows.length} · 未分类 ${board.counts.unconfirmed}`
+                    : "鲲鹏客户数据暂不可用"}
+                </span>
+              </header>
+              {overridesCorrupt && (
+                <p className="crm-maas-review__error" role="alert">
+                  本机覆盖表损坏，请先修复 .local-cache/maas-overrides.json；修复前人工分类不显示、保存已暂停（不会覆盖原文件）。
+                </p>
+              )}
+              {reviewOpen && (
+                <>
+                  <p className="crm-table-note">
+                    列出全部快照客户（含无在途 PPL 的客户，不受泳道与搜索筛选影响）。候选由关键词初筛生成、只标「疑似」；
+                    逐客户选择 MaaS / 非 MaaS / 未分类并保存，写入本机覆盖表（.local-cache，0600），保存后看板即时生效。
+                    选「未分类」= 清除覆盖、回到关键词初筛口径。
+                  </p>
+                  {candidatesState === "loading" && <p className="crm-muted">正在生成候选…</p>}
+                  {candidatesState === "unavailable" && (
+                    <p className="crm-muted">候选生成不可用（本机服务未响应或鲲鹏快照缺失）；仍可在此手动逐客户分类。</p>
+                  )}
+                  {candidatesState === "ready" && candidates && candidates.candidates.length === 0 && (
+                    <p className="crm-muted">无关键词命中候选（{candidates.totalCustomers} 个客户全部未命中初筛词表），仍可手动分类。</p>
+                  )}
+                  {reviewError && <p className="crm-maas-review__error">{reviewError}</p>}
+                  <ul className="crm-maas-review__list">
+                    {reviewRows.map((row) => {
+                      const candidate = candidateByCid.get(row.customer.cid);
+                      const selection = maasReviewSelection(row.maas);
+                      return (
+                        <li key={row.customer.cid} className="crm-maas-review__row">
+                          <div className="crm-maas-review__who">
+                            <button className="text-button" onClick={() => setOpenCid(row.customer.cid)} title="打开客户详情">
+                              {row.customer.name}
+                            </button>
+                            <small>
+                              PPL {row.projects.length}
+                              {candidate
+                                ? ` · 疑似命中：${candidate.evidence
+                                  .map((entry) => `${entry.source === "customer" ? "客户名" : "项目"}「${entry.name}」${entry.keywords.join("/")}`)
+                                  .join("；")}`
+                                : " · 无关键词命中"}
+                            </small>
+                          </div>
+                          <span className={`crm-maas-badge crm-maas-badge--${row.maas.status}`}>
+                            {row.maas.basis === "keyword" ? "疑似 MaaS" : MAAS_BADGE_LABEL[row.maas.status]}
+                          </span>
+                          <label>
+                            <select
+                              value={selection.value}
+                              disabled={overridesCorrupt || savingCid === row.customer.cid}
+                              onChange={(event) => {
+                                // 非人工覆盖行以「初筛：…」占位为当前值，选 MaaS 才是真实变更并保存。
+                                const choice = maasReviewChoice(event.target.value);
+                                if (choice) void saveOverride(row.customer.cid, choice);
+                              }}
+                              aria-label={`分类 ${row.customer.name}`}
+                            >
+                              {selection.placeholder && (
+                                <option value={MAAS_SCREEN_VALUE} disabled>{selection.placeholder}</option>
+                              )}
+                              <option value="maas">MaaS</option>
+                              <option value="non_maas">非 MaaS</option>
+                              <option value="unconfirmed">未分类</option>
+                            </select>
+                          </label>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </>
+              )}
             </section>
 
             <div className="crm-lane-tabs" role="tablist" aria-label="泳道切换（移动端）">

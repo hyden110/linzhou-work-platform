@@ -17,6 +17,7 @@ import {
 import { createSolutionStore, type SolutionStore } from "./solution-store.ts";
 import { createCrmBridge, type CrmBridge, type InsightRecord } from "./crm-bridge.ts";
 import { createOpsBridge, type OpsBridge } from "./ops-bridge.ts";
+import { createMaasBridge, type MaasBridge } from "./maas-bridge.ts";
 import { createPplInspectionBridge, type PplInspectionBridge } from "./ppl-inspection-bridge.ts";
 import { createFbiMetricsBridge, type FbiMetricsBridge } from "./fbi-metrics-bridge.ts";
 import { createDingtalkBridge, type DingtalkBridge } from "./dingtalk-bridge.ts";
@@ -126,6 +127,7 @@ export interface LocalRouterDependencies {
   readonly solutionsDir?: string;
   readonly crmBridge?: CrmBridge;
   readonly opsBridge?: OpsBridge;
+  readonly maasBridge?: MaasBridge;
   readonly fbiMetricsBridge?: FbiMetricsBridge;
   readonly pplInspectionBridge?: PplInspectionBridge;
   readonly dingtalkBridge?: DingtalkBridge;
@@ -181,6 +183,7 @@ export function createLocalRouter(dependencies: LocalRouterDependencies) {
     ?? createSolutionStore(dependencies.solutionsDir ?? SOLUTIONS_PATH);
   const crmBridge = dependencies.crmBridge ?? createCrmBridge();
   const opsBridge = dependencies.opsBridge ?? createOpsBridge();
+  const maasBridge = dependencies.maasBridge ?? createMaasBridge();
   const fbiMetricsBridge = dependencies.fbiMetricsBridge ?? createFbiMetricsBridge();
   const pplInspectionBridge = dependencies.pplInspectionBridge ?? createPplInspectionBridge();
   const dingtalkBridge = dependencies.dingtalkBridge ?? createDingtalkBridge();
@@ -193,6 +196,7 @@ export function createLocalRouter(dependencies: LocalRouterDependencies) {
     pplInspection: pplInspectionBridge.inspection,
     kbConfig: kbBridge.config,
     opsDigest: opsBridge.digest,
+    maasOverrides: maasBridge.overridesState,
   });
   const leadsBridge = dependencies.leadsBridge ?? createLeadsBridge();
   const reportBridge = dependencies.reportBridge ?? createReportBridge();
@@ -245,6 +249,37 @@ export function createLocalRouter(dependencies: LocalRouterDependencies) {
     if (route === "/local/crm/refresh" && (request.method === "GET" || request.method === "POST")) {
       const status = request.method === "POST" ? crmBridge.startRefresh() : crmBridge.refreshStatus();
       return jsonResponse({ ok: true, data: status }, request.method === "POST" ? 202 : 200);
+    }
+
+    if (route === "/local/crm/maas-candidates" && request.method === "GET") {
+      // 每次都从快照重算并覆盖产物：候选是纯派生数据，GET 即刷新。
+      const file = await maasBridge.candidates();
+      return file
+        ? jsonResponse({ ok: true, data: file })
+        : jsonResponse({ ok: false, error: "snapshot_unavailable" }, 404);
+    }
+
+    if (route === "/local/crm/maas-overrides" && request.method === "GET") {
+      // source=corrupt：本机覆盖表存在但损坏，前端据此提示修复并暂停保存。
+      return jsonResponse({ ok: true, data: await maasBridge.overridesState() });
+    }
+
+    if (route === "/local/crm/maas-overrides" && request.method === "POST") {
+      const body = await readJsonBody(request);
+      // 不 trim：首尾空白/控制字符一律拒绝而非静默删除（评审 P3-1）。
+      const cid = typeof body?.cid === "string" ? body.cid : "";
+      const status = body?.status;
+      if (!cid || cid.length > 128 || /[\s\u0000-\u001f\u007f]/.test(cid)
+        || (status !== "maas" && status !== "non_maas" && status !== "unconfirmed")) {
+        return jsonResponse({ ok: false, error: "invalid_request" }, 400);
+      }
+      const result = await maasBridge.setOverride(cid, status);
+      if (!result.ok) {
+        return result.error === "overrides_corrupt"
+          ? jsonResponse({ ok: false, error: "overrides_corrupt" }, 409)
+          : jsonResponse({ ok: false, error: "invalid_request" }, 400);
+      }
+      return jsonResponse({ ok: true, data: { overrides: result.overrides } });
     }
 
     if (route === "/local/fbi/insight" && request.method === "GET") {

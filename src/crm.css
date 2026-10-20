@@ -232,6 +232,15 @@
 .crm-followup-unmatched { margin-top: 14px; }
 .crm-followup-unmatched ul { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 10px 18px 14px; list-style: none; }
 .crm-followup-unmatched li { color: var(--text-dim); font-size: 11px; line-height: 1.5; }
+.crm-maas-review h2 .text-button { display: inline-flex; align-items: center; gap: 5px; font-size: inherit; }
+.crm-maas-review__list { margin: 0; padding: 2px 0 10px; list-style: none; }
+.crm-maas-review__row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 10px; padding: 8px 18px; border-bottom: 1px solid rgba(27,42,47,.6); }
+.crm-maas-review__row:last-child { border-bottom: 0; }
+.crm-maas-review__row select { height: 26px; padding: 0 6px; border: 1px solid var(--line-bright); border-radius: 5px; color: var(--text); background: #0a1114; font-size: 11px; outline: 0; }
+.crm-maas-review__who { min-width: 0; }
+.crm-maas-review__who .text-button { font-size: 12px; }
+.crm-maas-review__who small { display: block; overflow: hidden; margin-top: 2px; color: var(--text-dim); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.crm-maas-review__error { margin: 8px 18px 0; color: var(--danger); font-size: 11px; }
 .crm-lane-tabs { display: none; }
 
 @media (max-width: 1100px) {
