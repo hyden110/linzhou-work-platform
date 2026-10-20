@@ -1,0 +1,217 @@
+/* 设置页 + 演示模式（V2 · 设置页批次）。
+ * 只复用 globals.css 既有 token 与既有类（.panel / .panel__header / .eyebrow / .status-badge /
+ * .text-button / .spin 等），不新增色值：需要 mint / amber 透明底处沿用 globals.css 屋内既有
+ * 惯例的 rgba 字面量（数值与 var(--mint) / var(--amber) 同源，见 F4/F5 评审口径）。 */
+
+/* ---- 演示模式 · 遮挡 ---- */
+/* 本页开关直接控制渲染的遮挡类（真值仍在 DOM，blur 非删除，不交出屏幕控制权）。 */
+.demo-mask {
+  filter: blur(max(4.5px, .42em)) saturate(.6);
+  opacity: .8;
+  user-select: none;
+}
+
+/* 通用契约：任何视图给敏感数据节点标 data-demo-field="customer|amount|uid" 即被遮挡（失效自动无副作用）。 */
+html.demo-on [data-demo-field="customer"],
+html.demo-on [data-demo-field="amount"],
+html.demo-on [data-demo-field="uid"] {
+  filter: blur(max(4.5px, .42em)) saturate(.6);
+  opacity: .8;
+}
+
+/* 现有视图数据区的尽力钩子（纯 CSS、零 JS 改动，选择器失配自动失效；非演示态完全无影响）：
+ * 客户盘面 / TOP 表的客户名按钮、GAAP 金额列（第 3-5 列覆盖两张表的所有金额列，个别
+ * 等级 / 日期列被顺带模糊属演示态可接受的过遮）、GAAP 异动卡客户名与涨跌额、拓新雷达企业名。 */
+html.demo-on .crm-table .text-button,
+html.demo-on .crm-table tbody td:nth-child(3),
+html.demo-on .crm-table tbody td:nth-child(4),
+html.demo-on .crm-table tbody td:nth-child(5),
+html.demo-on .gaap-alert-card__main strong,
+html.demo-on .gaap-alert-card__move,
+html.demo-on .leads-row__name {
+  filter: blur(max(4.5px, .42em)) saturate(.6);
+  opacity: .8;
+}
+
+/* ---- 演示模式 · 开关与徽标 ---- */
+.demo-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--text-soft);
+  cursor: pointer;
+  font-size: 11px;
+}
+.demo-toggle:hover { border-color: rgba(67, 225, 180, .3); }
+.demo-toggle__knob {
+  position: relative;
+  width: 28px;
+  height: 15px;
+  border-radius: 999px;
+  background: var(--line-bright);
+  transition: background .2s ease;
+}
+.demo-toggle__knob::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 11px;
+  height: 11px;
+  border-radius: 999px;
+  background: var(--text-dim);
+  transition: left .2s ease, background .2s ease;
+}
+/* 演示中用 amber 提醒（rgba 字面量与 var(--amber) 同源，屋内既有惯例）。 */
+.demo-toggle.is-on { border-color: rgba(240, 187, 98, .45); color: var(--amber); }
+.demo-toggle.is-on .demo-toggle__knob { background: rgba(240, 187, 98, .28); }
+.demo-toggle.is-on .demo-toggle__knob::after { left: 15px; background: var(--amber); }
+.demo-toggle__label { font-weight: 500; }
+
+/* 顶栏常驻徽标（仅演示模式开启时渲染；点击即退出）。 */
+.demo-mode-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 11px;
+  border: 1px solid rgba(240, 187, 98, .45);
+  border-radius: 8px;
+  background: rgba(240, 187, 98, .08);
+  color: var(--amber);
+  cursor: pointer;
+  font-size: 11px;
+}
+.demo-mode-badge:hover { border-color: var(--amber); }
+
+/* ---- 演示模式 · 效果示例 ---- */
+.demo-example {
+  margin: 2px 0;
+  padding: 11px 13px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+}
+.demo-example__caption {
+  display: block;
+  margin: 0 0 8px;
+  color: var(--text-dim);
+  font: 600 9px ui-monospace, monospace;
+  letter-spacing: .06em;
+}
+.demo-example__row { display: flex; flex-wrap: wrap; gap: 10px 24px; }
+.demo-example__cell { display: flex; flex-direction: column; gap: 3px; }
+.demo-example__cell small { color: var(--text-dim); font-size: 9px; }
+.demo-example__cell b { color: var(--text-soft); font-size: 12px; font-weight: 500; }
+
+/* ---- 设置页通用 ---- */
+.settings-panel__body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 18px;
+}
+.settings-panel__hint { color: var(--text-dim); font: 10px ui-monospace, monospace; }
+.settings-note { margin: 0; color: var(--text-soft); font-size: 11px; line-height: 1.7; }
+.settings-note--dim { display: flex; align-items: flex-start; gap: 7px; color: var(--text-dim); font-size: 10px; line-height: 1.6; }
+.settings-note--dim svg { flex: none; margin-top: 2px; }
+
+/* ---- 能力清单 ---- */
+.settings-cap-group { margin: 2px 0 6px; }
+.settings-cap-group h3 {
+  margin: 0 0 8px;
+  color: var(--text-dim);
+  font: 600 10px ui-monospace, monospace;
+  letter-spacing: .08em;
+}
+.settings-cap-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 170px) minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 3px 14px;
+  margin: 0 0 4px;
+  padding: 7px 11px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, .012);
+}
+.settings-cap-row strong { color: var(--text-soft); font-size: 11px; font-weight: 550; }
+.settings-cap-row__desc { overflow: hidden; color: var(--text-dim); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.settings-cap-row__note { grid-column: 1 / -1; color: var(--text-dim); font-size: 10px; line-height: 1.5; }
+.settings-cap-row[data-status="pending-auth"] { border-color: rgba(240, 187, 98, .22); }
+
+/* ---- 数据新鲜度 ---- */
+.settings-fresh-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(86px, auto) minmax(96px, auto);
+  align-items: center;
+  gap: 4px 14px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, .012);
+}
+.settings-fresh-row__main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.settings-fresh-row__main strong { color: var(--text-soft); font-size: 11px; font-weight: 550; }
+.settings-fresh-row__main span { overflow: hidden; color: var(--text-dim); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.settings-fresh-row time { color: var(--text-dim); font: 10px ui-monospace, monospace; text-align: right; }
+.settings-fresh__run { justify-self: end; white-space: nowrap; border: 1px solid var(--line); border-radius: 5px; padding: 4px 8px; }
+.settings-fresh__run:hover:not(:disabled) { border-color: rgba(67, 225, 180, .3); }
+.settings-fresh__note { grid-column: 1 / -1; color: var(--text-dim); font-size: 10px; line-height: 1.5; }
+.settings-fresh__error { grid-column: 1 / -1; color: var(--amber); font-size: 10px; line-height: 1.5; }
+
+/* CRM 快照源级明细（同步中心的紧凑版）。 */
+.settings-fresh-sources {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 4px;
+  padding: 10px 11px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+}
+.settings-fresh-source {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(70px, auto);
+  align-items: center;
+  gap: 8px;
+}
+.settings-fresh-source span { overflow: hidden; color: var(--text-dim); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.settings-fresh-source time { color: var(--text-dim); font: 9px ui-monospace, monospace; text-align: right; }
+
+/* 知识库源状态 chips。 */
+.settings-kb-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.settings-kb-chip {
+  padding: 4px 9px;
+  border: 1px solid rgba(67, 225, 180, .22);
+  border-radius: 5px;
+  color: var(--mint-soft);
+  font-size: 10px;
+}
+.settings-kb-chip[data-ok="no"] { border-color: rgba(240, 187, 98, .3); color: var(--amber); }
+
+/* ---- 配置状态 ---- */
+.settings-config-grid { display: flex; flex-direction: column; gap: 4px; }
+.settings-config-row {
+  display: grid;
+  grid-template-columns: minmax(200px, 300px) minmax(120px, auto) minmax(0, 1fr);
+  align-items: baseline;
+  gap: 3px 14px;
+  padding: 8px 11px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, .012);
+}
+.settings-config-row strong { color: var(--text-soft); font-size: 11px; font-weight: 500; }
+.settings-config-row small { color: var(--text-dim); font-size: 10px; line-height: 1.5; }
+
+@media (max-width: 720px) {
+  .settings-cap-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .settings-cap-row__desc { grid-column: 1 / -1; white-space: normal; }
+  .settings-fresh-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .settings-fresh-row time { grid-column: 1; text-align: left; }
+  .settings-fresh__run { grid-column: 2; }
+  .settings-config-row { grid-template-columns: minmax(0, 1fr); }
+  .settings-fresh-sources { grid-template-columns: minmax(0, 1fr); }
+}

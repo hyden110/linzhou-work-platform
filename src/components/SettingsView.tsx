@@ -1,0 +1,717 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { EyeOff, LoaderCircle, RefreshCw, ShieldCheck } from "lucide-react";
+import "../settings.css";
+import { HealthPanel } from "./HealthPanel";
+import { useCrm } from "./crm/CrmProvider";
+import { useOps } from "./ops/OpsProvider";
+import { SOURCE_LABELS, formatDateTime } from "./crm/crm-shared";
+import { StatusBadge, ViewHeading, type ViewProps } from "./shared";
+import { fetchKbSources, kbErrorMessage, type KbSourceView } from "../lib/kb-client";
+import {
+  fetchLeadsSnapshot,
+  leadsAgeHours,
+  leadsErrorMessage,
+  refreshLeads,
+  type LeadsSnapshot,
+} from "../lib/leads-client";
+import {
+  readDemoMode,
+  setDemoMode,
+  shouldMask,
+  subscribeDemoMode,
+  type DemoDocumentLike,
+  type DemoFieldKind,
+  type DemoStorageLike,
+} from "../lib/demo-mode";
+import type { OpsDigest } from "../lib/ops-types";
+import type { SourceKey, SourceStatus } from "../lib/crm-types";
+
+/**
+ * 设置视图（V2）：能力清单 / 配置状态 / 数据新鲜度 / 只读刷新入口 / 演示模式。
+ * 全页只读——不写任何配置、不新造写操作；配置只报「已设置 / 未配置 / 探测失败」，
+ * 绝不显示值。数据一律复用既有桥与客户端（F4 体检、kb、leads、crm、ops）。
+ */
+
+/* ---------- 环境访问（无 DOM/存储环境安全降级） ---------- */
+
+function browserStorage(): DemoStorageLike | null {
+  return typeof localStorage === "undefined" ? null : localStorage;
+}
+
+function browserDocument(): DemoDocumentLike | null {
+  return typeof document === "undefined" ? null : document;
+}
+
+/* ---------- 能力清单：口径与派生 ---------- */
+
+type CapabilityStatus = "available" | "pending-auth" | "blocked";
+
+const CAPABILITY_STATUS: Readonly<Record<CapabilityStatus, { label: string; tone: "green" | "amber" | "muted" }>> = {
+  available: { label: "可用", tone: "green" },
+  "pending-auth": { label: "待授权", tone: "amber" },
+  blocked: { label: "受阻", tone: "muted" },
+};
+
+interface CapabilityRow {
+  readonly id: string;
+  readonly name: string;
+  readonly description: string;
+  readonly status: CapabilityStatus;
+  readonly note: string;
+}
+
+/** 各视图实际消费的快照源（读过 CockpitView/CustomersView/DingtalkView/PplFollowupView 的取数口径）。 */
+const VIEW_SOURCES: Readonly<Record<string, readonly SourceKey[]>> = {
+  cockpit: ["agenda", "todos", "mentions", "customers", "projects"],
+  customers: ["customers", "overview", "top"],
+  dingtalk: ["groups", "mentions", "unread", "customers"],
+  lifecycle: ["customers", "projects", "mygroups"],
+};
+
+const SOURCE_KEY_ORDER = Object.keys(SOURCE_LABELS) as SourceKey[];
+
+interface CapabilityContext {
+  readonly crmSources: Partial<Record<SourceKey, SourceStatus>>;
+  readonly crmMissing: boolean;
+  readonly crmHasSnapshot: boolean;
+  readonly opsDigest: OpsDigest | null;
+  readonly opsMissing: boolean;
+  readonly leads: LeadsSnapshot | null;
+  readonly leadsFailed: boolean;
+  readonly kbSources: readonly KbSourceView[] | null;
+  readonly kbFailed: boolean;
+}
+
+function crmViewCapability(
+  ctx: CapabilityContext,
+  keys: readonly SourceKey[],
+): { status: CapabilityStatus; note: string } {
+  if (ctx.crmMissing) return { status: "blocked", note: "尚无客户快照：到同步中心点「手动同步」生成第一份" };
+  if (!ctx.crmHasSnapshot) return { status: "blocked", note: "本地桥未启动或快照读取失败" };
+  const states = keys.flatMap((key) => (ctx.crmSources[key] ? [ctx.crmSources[key] as SourceStatus] : []));
+  if (states.length === 0) return { status: "blocked", note: "当前快照缺少该视图依赖的数据源" };
+  if (states.some((state) => state.status === "auth_required")) {
+    return { status: "pending-auth", note: "上游要求登录/授权（dws 或鲲鹏登录失效），重新登录后刷新" };
+  }
+  if (states.some((state) => state.status === "error")) {
+    return { status: "blocked", note: "依赖的数据源读取失败，明细见同步中心" };
+  }
+  const partialCount = states.filter((state) => state.status === "partial").length;
+  return { status: "available", note: partialCount > 0 ? `${partialCount} 个数据源部分降级（明细见同步中心）` : "" };
+}
+
+function leadsViewCapability(ctx: CapabilityContext): { status: CapabilityStatus; note: string } {
+  if (ctx.leadsFailed) return { status: "blocked", note: "本地桥未启动或读取失败" };
+  if (!ctx.leads) return { status: "blocked", note: "尚未读取到拓新雷达快照" };
+  if (!ctx.leads.configured) {
+    return { status: "blocked", note: "未配置 .local-cache/leads.json（参考 config/leads.json.example）" };
+  }
+  if (!ctx.leads.hasData) return { status: "blocked", note: "已配置但尚无数据：到拓新雷达点「刷新快照」首次拉取" };
+  return { status: "available", note: "" };
+}
+
+function opsViewCapability(ctx: CapabilityContext): { status: CapabilityStatus; note: string } {
+  if (ctx.opsMissing) return { status: "blocked", note: "尚无运营摘要：到运营推广视图点「刷新」生成" };
+  if (!ctx.opsDigest) return { status: "blocked", note: "本地桥未启动或读取失败" };
+  const states = Object.values(ctx.opsDigest.sources);
+  if (states.some((state) => state.status === "auth_required")) {
+    return { status: "pending-auth", note: "运营数据源要求登录/授权" };
+  }
+  if (states.some((state) => state.status === "error")) {
+    return { status: "blocked", note: "运营数据源读取失败，明细见运营推广视图" };
+  }
+  return { status: "available", note: "" };
+}
+
+function kbCapability(ctx: CapabilityContext): { status: CapabilityStatus; note: string } {
+  if (ctx.kbFailed) return { status: "blocked", note: "本地桥未启动或读取失败" };
+  if (!ctx.kbSources) return { status: "blocked", note: "尚未读取到知识源状态" };
+  if (ctx.kbSources.length === 0) return { status: "blocked", note: "未配置 .local-cache/kb.json 或无启用源" };
+  const okCount = ctx.kbSources.filter((source) => source.ok).length;
+  if (okCount === 0) return { status: "blocked", note: "启用源均不可检索（明细见 AI 问答 · 外部知识库）" };
+  return { status: "available", note: `启用 ${ctx.kbSources.length} 源，其中 ${okCount} 源可检索` };
+}
+
+function viewCapability(ctx: CapabilityContext, id: string): { status: CapabilityStatus; note: string } {
+  const keys = VIEW_SOURCES[id];
+  if (keys) return crmViewCapability(ctx, keys);
+  if (id === "leads") return leadsViewCapability(ctx);
+  if (id === "ops") return opsViewCapability(ctx);
+  return { status: "available", note: "" };
+}
+
+function buildViewCapabilities(ctx: CapabilityContext): readonly CapabilityRow[] {
+  const rows: ReadonlyArray<Omit<CapabilityRow, "status" | "note">> = [
+    { id: "cockpit", name: "驾驶舱", description: "今日待办 / 会议 / @我 + 客户与项目 + 行动队列" },
+    { id: "customers", name: "客户盘面", description: "客户池、GAAP 异动与 TOP 榜（鲲鹏 ecid 只读）" },
+    { id: "dingtalk", name: "钉群盘面", description: "钉钉群 / 未读 / @我 与客户覆盖核对（dws 只读）" },
+    { id: "lifecycle", name: "PPL 跟进", description: "在途项目按客户分组、巡检与分层视图（只读）" },
+    { id: "leads", name: "拓新雷达", description: "dws aitable 只读拉取的拓新线索分桶" },
+    { id: "report", name: "日周报", description: "当日草稿 / 提交状态 / 双周报目录与 automations 探测（只读）" },
+    { id: "inbox", name: "消息中心", description: "本机收件箱（测试生产者 + 已读位）" },
+    { id: "overview", name: "总览", description: "本地索引概览与入口（纯本地元数据）" },
+    { id: "ask", name: "AI 问答", description: "本地受控证据问答 + 外部知识库检索" },
+    { id: "map", name: "知识地图", description: "方案 / 客户 / 活动 / 主题四维找资料" },
+    { id: "assistant", name: "方案助手", description: "证据组合生成方案建议 + 已发布案例面板" },
+    { id: "documents", name: "全部资料", description: "本地元数据索引浏览与筛选" },
+    { id: "yunqi", name: "云栖大会", description: "本机整理稿解析的六层趋势与论坛" },
+    { id: "sync", name: "同步中心", description: "数据源健康、手动同步与环境体检" },
+    { id: "ops", name: "运营推广", description: "运营摘要 / 推广卡片 / 微信登记（摘要只读）" },
+    { id: "agents", name: "数字员工", description: "QoderWake daemon / AgentLoop 观测 / 微信快照（全只读）" },
+    { id: "settings", name: "设置", description: "能力清单、配置状态、数据新鲜度与演示模式（本页）" },
+  ];
+  const notes: Readonly<Record<string, string>> = {
+    report: "日报回写 / 提交未开通（见全局能力）",
+    inbox: "钉钉真实回复未开通（见全局能力）",
+    ask: "未配置百炼密钥时自动降级为关键词检索（实际配置见下方体检）",
+    agents: "凭据管理与出票未开通（见全局能力）",
+  };
+  return rows.map((row) => {
+    const derived = viewCapability(ctx, row.id);
+    return { ...row, status: derived.status, note: derived.note || notes[row.id] || "" };
+  });
+}
+
+function buildGlobalCapabilities(ctx: CapabilityContext): readonly CapabilityRow[] {
+  const kb = kbCapability(ctx);
+  const writePending: readonly CapabilityRow[] = [
+    { id: "write-report", name: "日报回写（草稿保存 / 提交）", description: "保存日报草稿、提交日报到 CRM / AI 表", status: "pending-auth", note: "本台未开通：日周报视图仅只读展示当日草稿、提交状态与周报目录" },
+    { id: "write-reply", name: "消息中心真实回复", description: "从收件箱直接回复钉钉消息", status: "pending-auth", note: "钉钉回复链路未接：收件箱仅支持测试生产者与已读位切换" },
+    { id: "write-agentloop", name: "AgentLoop 凭据与出票", description: "管理 AgentLoop 凭据、连接测试与工单出票", status: "pending-auth", note: "凭据表单 / 连接测试 / 工单出票均未实现：数字员工视图仅观测状态" },
+    { id: "write-dingtalk", name: "钉钉真实发送（运营卡片推送）", description: "运营推广卡片真实推送到钉钉群", status: "pending-auth", note: "OPS_DINGTALK_PUSH_ENABLED 默认关：需在本机显式开启后走两步确认推送" },
+    { id: "write-aitable", name: "AI 表回写（拓新雷达）", description: "把线索跟进状态回写到 aitable", status: "pending-auth", note: "dws aitable 仅只读拉取，无回写端点" },
+  ];
+  const readCaps: readonly CapabilityRow[] = [
+    { id: "kb-search", name: "外部知识检索（本地桥 kb）", description: "阿里云 / 钉钉文档多源检索", status: kb.status, note: kb.note },
+    { id: "ai-qa", name: "AI 问答与摘要（百炼密钥）", description: "证据问答 / 语义检索 / 外部摘要", status: "available", note: "未配置 DASHSCOPE_API_KEY 时自动降级为关键词检索（实际配置见下方体检）" },
+    { id: "health", name: "环境与健康体检", description: "桥产物 / CLI 在位 / 配置开关的只读体检", status: "available", note: "" },
+    { id: "demo-mode", name: "演示模式（本页开关）", description: "客户名 / 金额 / 账号类字段模糊遮挡", status: "available", note: "默认关；状态存本机 localStorage，刷新后保持" },
+  ];
+  return [...writePending, ...readCaps];
+}
+
+/* ---------- 数据新鲜度：口径与派生 ---------- */
+
+type FreshnessStatus = "ok" | "partial" | "stale" | "missing" | "unknown";
+
+const FRESHNESS_STATUS: Readonly<Record<FreshnessStatus, { label: string; tone: "green" | "amber" | "muted" }>> = {
+  ok: { label: "正常", tone: "green" },
+  partial: { label: "部分", tone: "amber" },
+  stale: { label: "过期", tone: "amber" },
+  missing: { label: "未同步", tone: "muted" },
+  unknown: { label: "探测失败", tone: "amber" },
+};
+
+interface FreshnessRow {
+  readonly id: string;
+  readonly label: string;
+  readonly detail: string;
+  readonly fetchedAt: string | null;
+  readonly status: FreshnessStatus;
+  readonly refreshKind: "crm" | "ops" | "leads" | null;
+  readonly note: string;
+}
+
+function sourceFreshness(state: SourceStatus | undefined): FreshnessStatus {
+  if (!state) return "missing";
+  if (state.status === "ok") return state.stale ? "stale" : "ok";
+  if (state.status === "missing") return "missing";
+  return "partial";
+}
+
+function aggregateFreshness(states: readonly FreshnessStatus[]): FreshnessStatus {
+  if (states.length === 0) return "missing";
+  if (states.every((status) => status === "ok")) return "ok";
+  if (states.some((status) => status === "unknown")) return "unknown";
+  if (states.every((status) => status === "missing")) return "missing";
+  if (states.some((status) => status === "partial")) return "partial";
+  return "stale";
+}
+
+function leadsFreshness(leads: LeadsSnapshot | null): FreshnessStatus {
+  if (!leads || !leads.configured || !leads.hasData) return "missing";
+  const ageHours = leadsAgeHours(leads.fetchedAt, Date.now());
+  return ageHours !== null && ageHours > 24 ? "stale" : "ok";
+}
+
+function kbFreshness(kbSources: readonly KbSourceView[] | null, kbFailed: boolean): FreshnessStatus {
+  if (kbFailed || !kbSources) return "unknown";
+  if (kbSources.length === 0) return "missing";
+  return kbSources.some((source) => source.ok) ? "ok" : "partial";
+}
+
+interface FreshnessArgs {
+  readonly indexGeneratedAt: string;
+  readonly crmGeneratedAt: string | null;
+  readonly crmSources: Partial<Record<SourceKey, SourceStatus>>;
+  readonly crmMissing: boolean;
+  readonly crmHasSnapshot: boolean;
+  readonly opsDigest: OpsDigest | null;
+  readonly opsMissing: boolean;
+  readonly leads: LeadsSnapshot | null;
+  readonly kbSources: readonly KbSourceView[] | null;
+  readonly kbFailed: boolean;
+}
+
+function crmFreshnessStatus(args: FreshnessArgs): FreshnessStatus {
+  if (args.crmMissing) return "missing";
+  if (!args.crmHasSnapshot) return "unknown";
+  const states = SOURCE_KEY_ORDER.flatMap((key) => {
+    const state = args.crmSources[key];
+    return state ? [sourceFreshness(state)] : [];
+  });
+  return aggregateFreshness(states);
+}
+
+function opsFreshnessStatus(args: FreshnessArgs): FreshnessStatus {
+  if (args.opsMissing) return "missing";
+  if (!args.opsDigest) return "unknown";
+  const states = Object.values(args.opsDigest.sources).map((state) => sourceFreshness(state));
+  return aggregateFreshness(states);
+}
+
+function buildFreshnessRows(args: FreshnessArgs): readonly FreshnessRow[] {
+  return [
+    {
+      id: "index",
+      label: "本地知识索引",
+      detail: "总览 / 问答 / 地图 / 方案助手 / 资料 / 云栖的元数据底座",
+      fetchedAt: args.indexGeneratedAt,
+      status: "ok",
+      refreshKind: null,
+      note: "由构建期同步脚本盘点生成（npm run build 时更新），无在线刷新入口",
+    },
+    {
+      id: "crm",
+      label: "CRM 快照（钉钉 dws + 鲲鹏 ecid）",
+      detail: "驾驶舱 / 客户盘面 / 钉群盘面 / PPL 跟进的数据源",
+      fetchedAt: args.crmGeneratedAt,
+      status: crmFreshnessStatus(args),
+      refreshKind: "crm",
+      note: "已有只读刷新入口：本机触发 dws + 鲲鹏只读拉取（POST /local/crm/refresh）",
+    },
+    {
+      id: "ops",
+      label: "运营摘要",
+      detail: "运营推广视图的摘要与条目来源",
+      fetchedAt: args.opsDigest?.generatedAt ?? null,
+      status: opsFreshnessStatus(args),
+      refreshKind: "ops",
+      note: "已有只读刷新入口（POST /local/ops/refresh）",
+    },
+    {
+      id: "leads",
+      label: "拓新雷达快照",
+      detail: "dws aitable 只读拉取的线索快照（超 24 小时视为过期）",
+      fetchedAt: args.leads?.fetchedAt ?? null,
+      status: leadsFreshness(args.leads),
+      refreshKind: "leads",
+      note: "已有只读刷新入口（POST /local/leads/refresh；已配置机器最坏可等待数分钟）",
+    },
+    {
+      id: "kb",
+      label: "外部知识库（本地桥 kb）",
+      detail: "打开本页时实时探测的启用源状态",
+      fetchedAt: null,
+      status: kbFreshness(args.kbSources, args.kbFailed),
+      refreshKind: null,
+      note: "来源配置在 .local-cache/kb.json，修改后重启 dev:function 生效；无在线刷新入口",
+    },
+  ];
+}
+
+/* ---------- 配置状态：存在性行（只报 set/unset，绝不显示值） ---------- */
+
+interface ConfigRow {
+  readonly label: string;
+  readonly value: string;
+  readonly tone: "green" | "muted" | "amber";
+  readonly note: string;
+}
+
+function buildConfigRows(ctx: CapabilityContext): readonly ConfigRow[] {
+  const leadsConfig: ConfigRow = ctx.leadsFailed
+    ? { label: ".local-cache/leads.json（拓新雷达配置）", value: "探测失败", tone: "amber", note: "本地桥未启动或读取失败" }
+    : ctx.leads?.configured
+      ? { label: ".local-cache/leads.json（拓新雷达配置）", value: "已配置", tone: "green", note: "五键齐备（baseId / tableId / viewId / tableName / priorityProvinces）；值不显示" }
+      : { label: ".local-cache/leads.json（拓新雷达配置）", value: "未配置", tone: "muted", note: "参考 config/leads.json.example 补齐五键" };
+  const kbConfig: ConfigRow = ctx.kbFailed
+    ? { label: ".local-cache/kb.json（外部知识源配置）", value: "探测失败", tone: "amber", note: "本地桥未启动或读取失败" }
+    : ctx.kbSources && ctx.kbSources.length > 0
+      ? { label: ".local-cache/kb.json（外部知识源配置）", value: `已配置（启用 ${ctx.kbSources.length} 源）`, tone: "green", note: "源名与可用性见上方数据新鲜度；值不显示" }
+      : { label: ".local-cache/kb.json（外部知识源配置）", value: "未配置", tone: "muted", note: "无启用源时外部知识检索不可用" };
+  return [
+    {
+      label: ".env.local（可选，env 注入）",
+      value: "由体检「可选能力」行如实显示（set/unset）",
+      tone: "muted",
+      note: "dev:function 以 --env-file-if-exists=.env.local 启动；本页与体检均只报设置与否，绝不显示值",
+    },
+    leadsConfig,
+    kbConfig,
+    {
+      label: ".local-cache/cases.json（已发布案例配置）",
+      value: "由体检「数据桥」行如实显示",
+      tone: "muted",
+      note: "未配置时案例桥报 unconfigured（不扇出渠道 CLI）；参考 config/cases.json.example",
+    },
+    {
+      label: "config/*.json（仓库内）",
+      value: "仅 *.json.example 示例入库",
+      tone: "muted",
+      note: "真实配置位在 .local-cache/（gitignored）；存在性以上方各行与体检为准",
+    },
+  ];
+}
+
+/* ---------- 演示模式区块 ---------- */
+
+const DEMO_EXAMPLES: ReadonlyArray<{ kind: DemoFieldKind; caption: string; value: string }> = [
+  { kind: "customer", caption: "客户名", value: "示例客户甲科技有限公司" },
+  { kind: "amount", caption: "金额", value: "1,234.56 万" },
+  { kind: "uid", caption: "账号 / UID", value: "cid-000123" },
+  { kind: "plain", caption: "普通文本（不遮挡）", value: "2026-10-20 · 方案评审" },
+];
+
+function maskClass(kind: DemoFieldKind, enabled: boolean): string {
+  return shouldMask(kind, enabled) ? "demo-mask" : "";
+}
+
+function DemoModeSection({ enabled, onToggle }: { enabled: boolean; onToggle: () => void }) {
+  return (
+    <section className="panel settings-panel" aria-label="演示模式">
+      <div className="panel__header">
+        <div><span className="eyebrow">DEMO MODE / 08</span><h2>演示模式</h2></div>
+        <button
+          type="button"
+          className={`demo-toggle ${enabled ? "is-on" : ""}`}
+          role="switch"
+          aria-checked={enabled}
+          aria-label="演示模式开关"
+          onClick={onToggle}
+        >
+          <span className="demo-toggle__knob" aria-hidden="true" />
+          <span className="demo-toggle__label">{enabled ? "演示中" : "已关闭"}</span>
+        </button>
+      </div>
+      <div className="settings-panel__body">
+        <p className="settings-note">
+          默认关闭；开启后客户名、金额、账号/UID 类字段以 CSS 模糊遮挡，状态存本机 localStorage、刷新后保持。
+          结构说明与日期时间保持清晰可讲解；开关本身不受遮挡影响，可随时退出。
+        </p>
+        <div className="demo-example" data-enabled={enabled ? "yes" : "no"}>
+          <span className="demo-example__caption">遮挡效果示例（合成数据，非真实客户）</span>
+          <div className="demo-example__row">
+            {DEMO_EXAMPLES.map((example) => (
+              <span className="demo-example__cell" key={example.kind}>
+                <small>{example.caption}</small>
+                <b className={maskClass(example.kind, enabled)}>{example.value}</b>
+              </span>
+            ))}
+          </div>
+        </div>
+        <p className="settings-note settings-note--dim">
+          <ShieldCheck size={13} /> 遮挡是 CSS 模糊，真值仍在页面 DOM 中：演示时请勿交出屏幕控制权或远程协助。
+          覆盖范围＝本页示例 + 已挂钩的数据区（客户盘面表格客户名与 GAAP 列、拓新雷达企业名等尽力钩子）；
+          未挂钩的视图（如钉群盘面会话、消息明细）仍可能透出真实信息，演示前请自行核对。
+        </p>
+      </div>
+    </section>
+  );
+}
+
+/** 顶栏演示模式徽标（App 挂载，常驻可退出；仅在开启时渲染）。 */
+export function DemoModeBadge() {
+  const [enabled, setEnabled] = useState(() => readDemoMode(browserStorage()));
+  useEffect(() => subscribeDemoMode(setEnabled), []);
+  if (!enabled) return null;
+  const exit = () => setDemoMode(browserStorage(), browserDocument(), false);
+  return (
+    <button
+      type="button"
+      className="demo-mode-badge"
+      onClick={exit}
+      title="演示模式开启中：客户名 / 金额 / 账号类字段已模糊；点击退出"
+    >
+      <EyeOff size={14} />
+      <span>演示模式</span>
+    </button>
+  );
+}
+
+/* ---------- 能力清单区块 ---------- */
+
+function CapabilityRowView({ row }: { row: CapabilityRow }) {
+  const status = CAPABILITY_STATUS[row.status];
+  return (
+    <div className="settings-cap-row" data-status={row.status}>
+      <strong>{row.name}</strong>
+      <span className="settings-cap-row__desc">{row.description}</span>
+      <StatusBadge tone={status.tone}>{status.label}</StatusBadge>
+      {row.note && <small className="settings-cap-row__note">{row.note}</small>}
+    </div>
+  );
+}
+
+function CapabilitySection({ viewRows, globalRows }: { viewRows: readonly CapabilityRow[]; globalRows: readonly CapabilityRow[] }) {
+  return (
+    <section className="panel settings-panel" aria-label="能力清单">
+      <div className="panel__header">
+        <div><span className="eyebrow">CAPABILITY INVENTORY / 08</span><h2>能力清单</h2></div>
+        <span className="settings-panel__hint">可用 / 待授权 / 受阻 · 口径如实</span>
+      </div>
+      <div className="settings-panel__body">
+        <div className="settings-cap-group">
+          <h3>视图能力（17 个视图）</h3>
+          {viewRows.map((row) => <CapabilityRowView key={row.id} row={row} />)}
+        </div>
+        <div className="settings-cap-group">
+          <h3>全局能力</h3>
+          {globalRows.map((row) => <CapabilityRowView key={row.id} row={row} />)}
+        </div>
+        <p className="settings-note settings-note--dim">
+          「待授权」＝默认关闭的写能力或上游要求登录/授权，本台未开通；「受阻」＝配置缺失或数据源读取失败。
+          口径不做粉饰：未开通的能力如实标注，不静默隐藏。
+        </p>
+      </div>
+    </section>
+  );
+}
+
+/* ---------- 数据新鲜度区块（含只读刷新入口） ---------- */
+
+interface RefreshEntry {
+  readonly running: boolean;
+  readonly run: () => void;
+  readonly error: string;
+}
+
+function RefreshAction({ running, onRun }: { running: boolean; onRun: () => void }) {
+  return (
+    <button type="button" className="text-button settings-fresh__run" onClick={onRun} disabled={running}>
+      {running ? <LoaderCircle className="spin" size={13} /> : <RefreshCw size={13} />}
+      {running ? "刷新中…" : "只读刷新"}
+    </button>
+  );
+}
+
+function FreshnessSection({ rows, crmSources, kbSources, refresh }: {
+  rows: readonly FreshnessRow[];
+  crmSources: Partial<Record<SourceKey, SourceStatus>>;
+  kbSources: readonly KbSourceView[] | null;
+  refresh: Readonly<Record<"crm" | "ops" | "leads", RefreshEntry>>;
+}) {
+  const hasCrmSources = SOURCE_KEY_ORDER.some((key) => crmSources[key]);
+  return (
+    <section className="panel settings-panel" aria-label="数据新鲜度">
+      <div className="panel__header">
+        <div><span className="eyebrow">DATA FRESHNESS / 08</span><h2>数据新鲜度</h2></div>
+        <span className="settings-panel__hint">各源最近刷新时间 + 状态</span>
+      </div>
+      <div className="settings-panel__body">
+        {rows.map((row) => {
+          const badge = FRESHNESS_STATUS[row.status];
+          const entry = row.refreshKind ? refresh[row.refreshKind] : null;
+          return (
+            <div className="settings-fresh-row" key={row.id}>
+              <div className="settings-fresh-row__main">
+                <strong>{row.label}</strong>
+                <span>{row.detail}</span>
+              </div>
+              <StatusBadge tone={badge.tone}>{badge.label}</StatusBadge>
+              <time>{formatDateTime(row.fetchedAt)}</time>
+              {entry
+                ? <RefreshAction running={entry.running} onRun={entry.run} />
+                : <small className="settings-fresh__note">{row.note}</small>}
+              {entry && entry.error && <small className="settings-fresh__error">{entry.error}</small>}
+              {entry && <small className="settings-fresh__note">{row.note}</small>}
+            </div>
+          );
+        })}
+        {hasCrmSources && (
+          <div className="settings-fresh-sources" aria-label="CRM 快照源级明细">
+            {SOURCE_KEY_ORDER.map((key) => {
+              const state = crmSources[key];
+              const badge = FRESHNESS_STATUS[sourceFreshness(state)];
+              return (
+                <div className="settings-fresh-source" key={key}>
+                  <span>{SOURCE_LABELS[key]}</span>
+                  <StatusBadge tone={badge.tone}>{badge.label}</StatusBadge>
+                  <time>{formatDateTime(state?.fetchedAt ?? state?.lastSuccessAt ?? null)}</time>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {kbSources && kbSources.length > 0 && (
+          <div className="settings-kb-chips" aria-label="知识库源状态">
+            {kbSources.map((source) => (
+              <span className="settings-kb-chip" data-ok={source.ok ? "yes" : "no"} key={source.id}>
+                {source.label}{source.ok ? "" : " · 不可用"}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+/* ---------- 配置状态区块（复用 F4 体检面板） ---------- */
+
+function ConfigSection({ rows }: { rows: readonly ConfigRow[] }) {
+  return (
+    <section className="panel settings-panel" aria-label="配置状态">
+      <div className="panel__header">
+        <div><span className="eyebrow">CONFIG STATUS / 08</span><h2>配置状态</h2></div>
+        <span className="settings-panel__hint">只报已设置 / 未配置，绝不显示值</span>
+      </div>
+      <div className="settings-panel__body">
+        <div className="settings-config-grid">
+          {rows.map((row) => (
+            <div className="settings-config-row" key={row.label}>
+              <strong>{row.label}</strong>
+              <StatusBadge tone={row.tone}>{row.value}</StatusBadge>
+              <small>{row.note}</small>
+            </div>
+          ))}
+        </div>
+        <p className="settings-note settings-note--dim">
+          <ShieldCheck size={13} /> 环境变量与数据桥的完整探测在下方「环境与健康」面板（F4 只读体检，手动触发）：
+          env 只报 set/unset、桥行如实反映各配置文件的存在性，值在任何情况下都不进页面。
+        </p>
+      </div>
+    </section>
+  );
+}
+
+/* ---------- 子状态 hook ---------- */
+
+function useLeadsSnapshotState(): {
+  leads: LeadsSnapshot | null;
+  leadsError: string;
+  leadsRefreshing: boolean;
+  refreshLeadsNow: () => void;
+} {
+  const [leads, setLeads] = useState<LeadsSnapshot | null>(null);
+  const [leadsError, setLeadsError] = useState("");
+  const [leadsRefreshing, setLeadsRefreshing] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+    fetchLeadsSnapshot()
+      .then((snapshot) => {
+        if (!mounted) return;
+        setLeads(snapshot);
+        setLeadsError("");
+      })
+      .catch((error: unknown) => {
+        if (mounted) setLeadsError(leadsErrorMessage(error));
+      });
+    return () => { mounted = false; };
+  }, []);
+
+  const refreshLeadsNow = useCallback(() => {
+    if (leadsRefreshing) return;
+    setLeadsRefreshing(true);
+    refreshLeads()
+      .then((result) => {
+        setLeads(result.snapshot);
+        setLeadsError("");
+      })
+      .catch((error: unknown) => setLeadsError(leadsErrorMessage(error)))
+      .finally(() => setLeadsRefreshing(false));
+  }, [leadsRefreshing]);
+
+  return { leads, leadsError, leadsRefreshing, refreshLeadsNow };
+}
+
+function useKbSourcesState(): { kbSources: KbSourceView[] | null; kbError: string } {
+  const [kbSources, setKbSources] = useState<KbSourceView[] | null>(null);
+  const [kbError, setKbError] = useState("");
+  useEffect(() => {
+    let mounted = true;
+    fetchKbSources()
+      .then((sources) => {
+        if (!mounted) return;
+        setKbSources(sources);
+        setKbError("");
+      })
+      .catch((error: unknown) => {
+        if (mounted) setKbError(kbErrorMessage(error));
+      });
+    return () => { mounted = false; };
+  }, []);
+  return { kbSources, kbError };
+}
+
+/* ---------- 主视图 ---------- */
+
+export function SettingsView({ index }: ViewProps) {
+  const crm = useCrm();
+  const ops = useOps();
+  const { leads, leadsError, leadsRefreshing, refreshLeadsNow } = useLeadsSnapshotState();
+  const { kbSources, kbError } = useKbSourcesState();
+  const [demoEnabled, setDemoEnabled] = useState(() => readDemoMode(browserStorage()));
+
+  useEffect(() => subscribeDemoMode(setDemoEnabled), []);
+
+  const toggleDemoMode = useCallback(() => {
+    setDemoMode(browserStorage(), browserDocument(), !demoEnabled);
+  }, [demoEnabled]);
+
+  const context = useMemo<CapabilityContext>(() => ({
+    crmSources: crm.snapshot?.sources ?? {},
+    crmMissing: crm.missing,
+    crmHasSnapshot: crm.snapshot !== null,
+    opsDigest: ops.digest,
+    opsMissing: ops.missing,
+    leads,
+    leadsFailed: Boolean(leadsError),
+    kbSources,
+    kbFailed: Boolean(kbError),
+  }), [crm.missing, crm.snapshot, kbError, kbSources, leads, leadsError, ops.digest, ops.missing]);
+
+  const viewRows = useMemo(() => buildViewCapabilities(context), [context]);
+  const globalRows = useMemo(() => buildGlobalCapabilities(context), [context]);
+  const configRows = useMemo(() => buildConfigRows(context), [context]);
+  const freshnessRows = useMemo(() => buildFreshnessRows({
+    indexGeneratedAt: index.generatedAt,
+    crmGeneratedAt: crm.snapshot?.generatedAt ?? null,
+    crmSources: crm.snapshot?.sources ?? {},
+    crmMissing: crm.missing,
+    crmHasSnapshot: crm.snapshot !== null,
+    opsDigest: ops.digest,
+    opsMissing: ops.missing,
+    leads,
+    kbSources,
+    kbFailed: Boolean(kbError),
+  }), [crm.missing, crm.snapshot, index.generatedAt, kbError, kbSources, leads, ops.digest, ops.missing]);
+
+  const refresh: Readonly<Record<"crm" | "ops" | "leads", RefreshEntry>> = {
+    crm: { running: crm.refresh?.state === "running", run: crm.refreshNow, error: crm.error },
+    ops: { running: ops.refresh?.state === "running", run: ops.refreshNow, error: ops.error },
+    leads: { running: leadsRefreshing, run: refreshLeadsNow, error: leadsError },
+  };
+
+  return (
+    <div className="view-stack">
+      <ViewHeading
+        eyebrow="WORKBENCH SETTINGS / 08"
+        title="设置"
+        description="能力清单、配置状态与数据新鲜度一览；演示模式开关在本页。全页只读：不写任何配置、不新造写操作。"
+        aside={<StatusBadge tone="blue">只读 · 不写配置</StatusBadge>}
+      />
+      <DemoModeSection enabled={demoEnabled} onToggle={toggleDemoMode} />
+      <CapabilitySection viewRows={viewRows} globalRows={globalRows} />
+      <FreshnessSection
+        rows={freshnessRows}
+        crmSources={crm.snapshot?.sources ?? {}}
+        kbSources={kbSources}
+        refresh={refresh}
+      />
+      <ConfigSection rows={configRows} />
+      <HealthPanel />
+    </div>
+  );
+}

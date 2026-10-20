@@ -13,6 +13,7 @@ import { NotifyBell } from "./components/NotifyBell";
 import { KnowledgeMapView } from "./components/KnowledgeMapView";
 import { ReportsView } from "./components/report/ReportsView";
 import { AgentsView } from "./components/agents/AgentsView";
+import { DemoModeBadge, SettingsView } from "./components/SettingsView";
 import { Sidebar } from "./components/Sidebar";
 import { OpsProvider } from "./components/ops/OpsProvider";
 import { OpsView } from "./components/ops/OpsView";
@@ -49,6 +50,7 @@ const viewTitles: Record<ViewId, string> = {
   report: "日周报",
   inbox: "消息中心",
   agents: "数字员工",
+  settings: "设置",
 };
 
 const EMPTY_DOCUMENTS: KnowledgeDocument[] = [];
@@ -213,6 +215,7 @@ function Workbench() {
     report: <ReportsView />,
     inbox: <InboxView />,
     agents: <AgentsView />,
+    settings: <SettingsView {...commonProps} />,
   }[activeView];
 
   return (
@@ -246,6 +249,7 @@ function Workbench() {
           >
             <SlidersHorizontal size={16} /><span>筛选</span>{hasFilters && <i />}
           </button>
+          <DemoModeBadge />
           <NotifyBell onOpenInbox={() => navigate("inbox")} />
           <div className="avatar" role="img" aria-label="当前用户 SA">SA</div>
         </header>

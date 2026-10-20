@@ -16,6 +16,7 @@ import {
   PanelLeftOpen,
   Radar,
   RefreshCw,
+  Settings,
   Sparkles,
   Users,
   Workflow,
@@ -70,6 +71,7 @@ const navigation: NavigationGroup[] = [
     eyebrow: "AGENT OPS",
     items: [
       { id: "agents", label: "数字员工", icon: Cpu },
+      { id: "settings", label: "设置", icon: Settings },
     ],
   },
 ];

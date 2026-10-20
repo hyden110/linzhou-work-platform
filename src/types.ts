@@ -14,7 +14,8 @@ export type ViewId =
   | "ops"
   | "report"
   | "inbox"
-  | "agents";
+  | "agents"
+  | "settings";
 
 export interface CountRow {
   name: string;
