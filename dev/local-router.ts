@@ -38,6 +38,8 @@ import { createGuidesBridge } from "./guides-bridge.ts";
 import { createAgentloopBridge } from "./agentloop-bridge.ts";
 import { createReportWriteBridge } from "./report-bridge.ts";
 import { createWorklogBridge } from "./worklog-bridge.ts";
+import { createWechatBridge } from "./wechat-bridge.ts";
+import { createMcpBridge } from "./mcp-bridge.ts";
 
 /**
  * Router for the local-only endpoints that back the workbench's "open on this Mac",
@@ -159,6 +161,8 @@ export interface LocalRouterDependencies {
   readonly agentloopBridge?: ReturnType<typeof createAgentloopBridge>;
   readonly reportWriteBridge?: ReturnType<typeof createReportWriteBridge>;
   readonly worklogBridge?: ReturnType<typeof createWorklogBridge>;
+  readonly wechatBridge?: ReturnType<typeof createWechatBridge>;
+  readonly mcpBridge?: ReturnType<typeof createMcpBridge>;
 }
 
 /** 稳定错误码 → HTTP 状态映射（report）：unconfigured=400（含参数/白名单拒绝），其余 502。 */
@@ -236,6 +240,8 @@ export function createLocalRouter(dependencies: LocalRouterDependencies) {
   const agentloopBridge = dependencies.agentloopBridge ?? createAgentloopBridge();
   const reportWriteBridge = dependencies.reportWriteBridge ?? createReportWriteBridge();
   const worklogBridge = dependencies.worklogBridge ?? createWorklogBridge();
+  const wechatBridge = dependencies.wechatBridge ?? createWechatBridge();
+  const mcpBridge = dependencies.mcpBridge ?? createMcpBridge();
   const allowedOrigins = new Set(dependencies.allowedOrigins ?? DEFAULT_ALLOWED_ORIGINS);
   const allowedHosts = new Set([
     `127.0.0.1:${dependencies.port}`,
@@ -799,15 +805,18 @@ export function createLocalRouter(dependencies: LocalRouterDependencies) {
     if (route === "/local/okr/sync-dry" && request.method === "POST") return okrBridge.syncDry(request);
     if (route === "/local/okr/sync-confirm" && request.method === "POST") return okrBridge.syncConfirm(request);
 
-    // 子路由委托：健康重检/续期、消息回复、数据源、接入向导四桥自带 handle()，
-    // 各自按错误码回 400/409/405/502，非本桥路径返回 undefined 交回主路由。
+    // 子路由委托：健康重检/续期、消息回复、数据源、接入向导、AgentLoop 出票、
+    // 日报回写、worklog、微信台账、MCP 服务九桥自带 handle()，各自按错误码回
+    // 400/404/409/405/502，非本桥路径返回 undefined 交回主路由。
     const delegated = await healthBridge.handle(request)
       ?? await replyBridge.handle(request)
       ?? await datasourceBridge.handle(request)
       ?? await guidesBridge.handle(request)
       ?? await agentloopBridge.handle(request)
       ?? await reportWriteBridge.handle(request)
-      ?? await worklogBridge.handle(request);
+      ?? await worklogBridge.handle(request)
+      ?? await wechatBridge.handle(request)
+      ?? await mcpBridge.handle(request);
     if (delegated) return delegated;
 
     return jsonResponse({ ok: false, error: "method_not_allowed" }, 405, { Allow: "GET, POST, DELETE" });

@@ -2,6 +2,7 @@ export type ViewId =
   | "cockpit"
   | "customers"
   | "dingtalk"
+  | "wechat"
   | "lifecycle"
   | "okr"
   | "leads"

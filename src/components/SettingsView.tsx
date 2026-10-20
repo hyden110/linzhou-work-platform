@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { EyeOff, LoaderCircle, RefreshCw, ShieldCheck } from "lucide-react";
 import "../settings.css";
 import { HealthPanel } from "./HealthPanel";
+import { McpPanel } from "./settings/McpPanel";
 import { useCrm } from "./crm/CrmProvider";
 import { useOps } from "./ops/OpsProvider";
 import { SOURCE_LABELS, formatDateTime } from "./crm/crm-shared";
@@ -145,6 +146,7 @@ function buildViewCapabilities(ctx: CapabilityContext): readonly CapabilityRow[]
     { id: "cockpit", name: "驾驶舱", description: "今日待办 / 会议 / @我 + 客户与项目 + 行动队列" },
     { id: "customers", name: "客户盘面", description: "客户池、GAAP 异动与 TOP 榜（鲲鹏 ecid 只读）" },
     { id: "dingtalk", name: "钉群盘面", description: "钉钉群 / 未读 / @我 与客户覆盖核对（dws 只读）" },
+    { id: "wechat", name: "微信台账", description: "微信群快照台账 / 客户绑定 / @我待办与单聊未回 / 客户组织表导入与台账回显（消息正文只出掩码）" },
     { id: "lifecycle", name: "PPL 跟进", description: "在途项目按客户分组、巡检与分层视图（只读）" },
     { id: "okr", name: "OKR 目标", description: "CRD 目标树 / 进展编辑 / dry-run 后逐项确认回写" },
     { id: "leads", name: "拓新雷达", description: "dws aitable 只读拉取的拓新线索分桶" },
@@ -172,6 +174,8 @@ function buildViewCapabilities(ctx: CapabilityContext): readonly CapabilityRow[]
     agents: "凭据 0600 掩码管理（只报已设置/未设置）；出票走 ticket-dry→ticket-confirm 单次消费 token，审计掩码留痕",
     profile: "判活需先粘贴 BUC 会话；未设置时视图如实引导，chrome 自动提取未接入",
     datasources: "刷新仅 supported 分组；建表与续期均需确认闸门，密钥类配置只报「已设置/未设置」",
+    wechat: "快照缺失时如实给 missing 指引，绝不伪造群数据；绑定/解绑是本地台账写（0600 + 备份 + 单飞 + 审计）；客户组织表走 dry→confirm 单次消费 token，导入后 GET /local/wechat/custorg 读回核对；个人 wxid 不出桥",
+    settings: "MCP 服务默认关；只读工具面需先建 sak_ key（明文仅创建时出现一次，落盘只有 sha256）；连接器体检只走注入握手，写入需 dry→confirm 且宿主配置默认只读",
   };
   return rows.map((row) => {
     const derived = viewCapability(ctx, row.id);
@@ -187,6 +191,7 @@ function buildGlobalCapabilities(ctx: CapabilityContext): readonly CapabilityRow
     { id: "write-agentloop", name: "AgentLoop 凭据与出票", description: "管理 AgentLoop 凭据、连接测试与工单出票", status: "available", note: "已接通：凭据 0600 存储且只报掩码/已设置；连接测试只读 listLogstores；出票 ticket-dry→ticket-confirm（confirm 严格 === 一次性 token，单次消费），cn-shanghai HMAC-SHA1 签名，成败均落掩码审计" },
     { id: "write-okr", name: "OKR 进展回写（CRD）", description: "把本地进展编辑回写到 CRD OKR", status: "available", note: "已接通：先 dry-run 出差异，再按 keys 逐项确认回写；冲突需显式 acceptConflicts，未配置 BUC 会话时如实引导不伪造数据" },
     { id: "write-provision", name: "数据源建表 / 凭据续期", description: "接入向导里的 aitable 建表与体检里的凭据续期", status: "available", note: "已接通：needConfirm 步必须 body.confirm === true（严格布尔）；terminal 步只回显命令文本，绝不代跑子进程" },
+    { id: "write-mcp", name: "MCP 服务开关 / API KEY / 连接器登记", description: "开启只读工具面、签发与吊销 sak_ key、连接器体检与写入", status: "available", note: "已接通：服务默认关，toggle 需 body.confirm 严格 === true；key 明文只在创建响应出现一次（磁盘与视图只有 sha256 + 前缀），吊销需 confirm 严格 === keyId；连接器体检走注入 spawn/fetch 且单飞（并发 409 busy），写入 dry→confirm 单次消费 token 并留 .bak 备份 + 掩码审计；宿主配置来源默认只读" },
     { id: "write-dingtalk", name: "钉钉真实发送（运营卡片推送）", description: "运营推广卡片真实推送到钉钉群", status: "pending-auth", note: "OPS_DINGTALK_PUSH_ENABLED 默认关：需在本机显式开启后走两步确认推送" },
     { id: "write-aitable", name: "AI 表回写（拓新雷达）", description: "把线索跟进状态回写到 aitable", status: "pending-auth", note: "dws aitable 仅只读拉取，无回写端点" },
   ];
@@ -708,8 +713,8 @@ export function SettingsView({ index }: ViewProps) {
       <ViewHeading
         eyebrow="WORKBENCH SETTINGS / 08"
         title="设置"
-        description="能力清单、配置状态与数据新鲜度一览；演示模式开关在本页。全页只读：不写任何配置、不新造写操作。"
-        aside={<StatusBadge tone="blue">只读 · 不写配置</StatusBadge>}
+        description="能力清单、配置状态与数据新鲜度一览；演示模式开关在本页。除页尾 MCP 服务面板（key 签发/吊销、服务开关、连接器写入）外，本页其余部分只读；MCP 写操作全部走确认闸门并留掩码审计。"
+        aside={<StatusBadge tone="blue">只读为主 · MCP 写操作两步确认</StatusBadge>}
       />
       <DemoModeSection enabled={demoEnabled} onToggle={toggleDemoMode} />
       <CapabilitySection viewRows={viewRows} globalRows={globalRows} />
@@ -721,6 +726,7 @@ export function SettingsView({ index }: ViewProps) {
       />
       <ConfigSection rows={configRows} />
       <HealthPanel />
+      <McpPanel />
     </div>
   );
 }

@@ -340,11 +340,13 @@ test("producers：运行中检测到变化自动 emit（定时器驱动，双 st
     await writeFile(yunqiPath, '{"v":1}');
 
     const producers = createProducers({ cacheDir: dir, bus, intervalMs: 10 });
+    await producers.poll(); // 显式建立基线：避免负载下首轮定时 tick 晚于写文件，把新内容当基线（曾致 flaky）
     producers.start();
     producers.start();
-    await sleep(40); // 基线
     await writeFile(yunqiPath, '{"v":2,"title":"合成议程"}');
-    await sleep(80);
+    const deadline = Date.now() + 3000;
+    while (received.length === 0 && Date.now() < deadline) await sleep(20);
+    await sleep(60); // 再放行几轮 tick，确认定时器未叠加导致重复 emit
     assert.equal(received.length, 1, "变化应恰好 emit 一次（定时器未叠加）");
     producers.stop();
   });
