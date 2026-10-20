@@ -9,11 +9,12 @@ import {
   notifyUnreadBadge,
   type NotifyStateView,
 } from "../lib/notify-client";
+import { useLive } from "../hooks/use-live";
 
 /**
- * 顶栏消息铃铛（F6）：挂载时拉取一次 + 打开面板/显式刷新时拉取，无 SSE、无轮询。
- * 桥离线时保持禁用态（对齐静态 notify.js hidden 语义），不放「空面板假象」。
- * 面板承载最近 50 条（明细筛选在「消息中心」视图）；已读切换只动 read 位。
+ * 顶栏消息铃铛（F6）：挂载时拉取一次 + 打开面板/显式刷新时拉取；另经 SSE 事件总线
+ * （snapshot:inbox）防抖 400ms 重拉，桥离线时保持禁用态（对齐静态 notify.js hidden 语义），
+ * 不放「空面板假象」。面板承载最近 50 条（明细筛选在「消息中心」视图）；已读切换只动 read 位。
  */
 
 export function NotifyBell({ onOpenInbox }: { readonly onOpenInbox: () => void }) {
@@ -36,6 +37,14 @@ export function NotifyBell({ onOpenInbox }: { readonly onOpenInbox: () => void }
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  // SSE 事件总线：收件箱快照变化时防抖重拉；卸载清定时器（useLive 自行断流）。
+  const liveTimerRef = useRef<number | undefined>(undefined);
+  useLive(["snapshot:inbox"], () => {
+    window.clearTimeout(liveTimerRef.current);
+    liveTimerRef.current = window.setTimeout(load, 400);
+  });
+  useEffect(() => () => window.clearTimeout(liveTimerRef.current), []);
 
   useEffect(() => {
     if (!open) return;

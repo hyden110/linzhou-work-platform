@@ -1,0 +1,259 @@
+/* OntologyView (F8) — 本体管理视图样式。
+ * 只消费 globals.css :root 既有变量（--panel、--panel-2、--line、--line-bright、
+ * --text、--text-soft、--text-dim、--mint、--cyan、--amber、--danger、--radius），
+ * 不新增全局变量、不覆盖其他视图的类。 */
+
+.onto-view {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.onto-view__badges {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.onto-loading {
+  color: var(--text-soft);
+  font-size: 13px;
+}
+
+.onto-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  font-size: 13px;
+}
+
+.onto-banner p { margin: 0; }
+
+.onto-banner--error {
+  border-color: rgba(236, 123, 115, 0.35);
+  background: rgba(236, 123, 115, 0.06);
+  color: var(--danger);
+}
+
+.onto-banner--ok {
+  border-color: rgba(67, 225, 180, 0.3);
+  background: rgba(67, 225, 180, 0.06);
+  color: var(--mint);
+}
+
+.onto-empty {
+  text-align: center;
+  padding: 40px 20px;
+}
+
+.onto-empty__cta {
+  margin-top: 12px;
+  border: 1px solid var(--mint);
+  color: var(--mint);
+  background: transparent;
+  border-radius: var(--radius);
+  padding: 8px 18px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.onto-empty__cta:hover { background: rgba(67, 225, 180, 0.08); }
+
+.onto-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.onto-grid .onto-graph,
+.onto-grid .onto-audit,
+.onto-grid .onto-issues { grid-column: 1 / -1; }
+
+@media (max-width: 1100px) {
+  .onto-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+.onto-list { overflow: hidden; }
+
+.onto-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.onto-table th,
+.onto-table td {
+  text-align: left;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-soft);
+  vertical-align: top;
+}
+
+.onto-table th {
+  color: var(--text-dim);
+  font-weight: 500;
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.onto-table td:first-child { color: var(--text); }
+.onto-table__empty { color: var(--text-dim); font-style: italic; }
+
+.onto-props {
+  max-width: 260px;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+}
+
+.onto-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border: 1px solid var(--line-bright);
+  border-radius: 999px;
+  color: var(--text-dim);
+  font-size: 10.5px;
+}
+
+.onto-tag--mint { color: var(--mint); border-color: rgba(67, 225, 180, 0.35); }
+.onto-tag--danger { color: var(--danger); border-color: rgba(236, 123, 115, 0.35); }
+
+/* ---- SVG 派生图 ---- */
+
+.onto-graph__meta { color: var(--text-dim); font-size: 11.5px; }
+
+.onto-graph__scroll {
+  overflow: auto;
+  padding: 8px 12px 14px;
+  background: var(--panel-2);
+}
+
+.onto-graph__col {
+  fill: var(--text-dim);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+}
+
+.onto-graph__rule { stroke: var(--line); stroke-width: 1; }
+
+.onto-graph__link { stroke: var(--line-bright); stroke-width: 1.5; opacity: 0.9; }
+.onto-graph__link--confirmed { stroke: var(--mint); }
+.onto-graph__link--aligned { stroke: var(--cyan); }
+.onto-graph__link--inferred { stroke: var(--amber); stroke-dasharray: 4 3; }
+
+.onto-graph__node rect {
+  fill: var(--panel);
+  stroke: var(--line-bright);
+  stroke-width: 1;
+}
+
+.onto-graph__name { fill: var(--text); font-size: 12px; }
+.onto-graph__sub { fill: var(--text-dim); font-size: 10px; }
+
+/* ---- 动作面板 ---- */
+
+.onto-panel__key { color: var(--text-dim); font-size: 11px; }
+.onto-panel__key code { color: var(--text-soft); }
+
+.onto-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px 16px;
+}
+
+.onto-form__row {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  font-size: 12.5px;
+}
+
+.onto-form__row > span { color: var(--text-soft); }
+
+.onto-form__row select,
+.onto-form__row input,
+.onto-form__row textarea {
+  background: var(--panel-2);
+  border: 1px solid var(--line-bright);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 7px 10px;
+  font-size: 12.5px;
+  font-family: inherit;
+  width: 100%;
+}
+
+.onto-form__row textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+
+.onto-form__row--danger > span { color: var(--danger); }
+.onto-form__row--danger input { border-color: rgba(236, 123, 115, 0.4); }
+
+.onto-form__hint { margin: 0; color: var(--text-dim); font-size: 12px; }
+
+.onto-form__error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 12.5px;
+}
+
+.onto-form__submit {
+  justify-self: start;
+  border: 1px solid var(--mint);
+  color: var(--mint);
+  background: transparent;
+  border-radius: 8px;
+  padding: 8px 20px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.onto-form__submit:hover:not(:disabled) { background: rgba(67, 225, 180, 0.08); }
+.onto-form__submit:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.onto-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.onto-checks__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.onto-checks__item code { color: var(--cyan); }
+
+/* ---- 冲突与违例 ---- */
+
+.onto-issues ul {
+  margin: 0;
+  padding: 10px 14px 14px 30px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.onto-issues__item {
+  color: var(--amber);
+  font-size: 12.5px;
+}
+
+.onto-issues__item code { color: var(--text-soft); margin-right: 6px; }
+
+@media (max-width: 720px) {
+  .onto-form__row { grid-template-columns: minmax(0, 1fr); }
+}

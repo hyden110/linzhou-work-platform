@@ -1,0 +1,77 @@
+/* 个人中心（Cookie/BUC 会话与判活）。
+ * 只复用 globals.css 既有 token（--panel / --line / --mint / --amber / --text-soft 等）
+ * 与既有类（.panel / .panel__header / .eyebrow / .status-badge / .text-button / .spin），
+ * 不新增色值：mint / amber 透明底沿用屋内既有 rgba 字面量惯例（同 settings.css 口径）。 */
+
+.profile-panel__body { display: flex; flex-direction: column; gap: 14px; padding: 16px 18px; }
+.profile-panel__hint { color: var(--text-dim); font: 11px ui-monospace, monospace; }
+
+.profile-note { display: flex; align-items: center; gap: 7px; margin: 0; color: var(--text-soft); font-size: 12px; line-height: 1.6; }
+.profile-note--dim { color: var(--text-dim); }
+.profile-note--warn { color: var(--amber); }
+
+/* ---- 账号卡 ---- */
+.profile-account { display: flex; flex-direction: column; gap: 12px; }
+.profile-account__id { display: flex; align-items: baseline; gap: 12px; }
+.profile-account__id strong { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 18px; letter-spacing: .06em; color: var(--mint-soft); }
+.profile-account__id span { color: var(--text-soft); font-size: 13px; }
+.profile-account__meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px 18px; margin: 0; }
+.profile-account__meta > div { display: flex; align-items: baseline; gap: 8px; border-bottom: 1px dashed var(--line); padding-bottom: 6px; }
+.profile-account__meta dt { flex: 0 0 auto; color: var(--text-dim); font-size: 11px; }
+.profile-account__meta dd { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--text); font-size: 12px; }
+.profile-account__mask { color: var(--text-dim); font-family: ui-monospace, monospace; font-size: 11px; }
+
+/* 偏好驱动的界面遮挡（同演示模式口径：CSS 模糊，真值仍在 DOM，不交出屏幕控制权）。 */
+.profile-mask { filter: blur(max(4.5px, .42em)) saturate(.6); opacity: .8; user-select: none; }
+
+/* ---- manual 粘贴表单 ---- */
+.profile-form { display: flex; flex-direction: column; gap: 12px; }
+.profile-form__field { display: flex; flex-direction: column; gap: 6px; }
+.profile-form__field > span { color: var(--text-dim); font-size: 11px; letter-spacing: .04em; }
+.profile-form__field input {
+  width: 100%; max-width: 560px; padding: 9px 12px;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--panel-2); color: var(--text); font-size: 13px;
+}
+.profile-form__field input:focus { border-color: rgba(67, 225, 180, .4); outline: none; }
+.profile-form__field input::placeholder { color: var(--text-dim); font-size: 12px; }
+.profile-form__actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.profile-form__test { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; border-top: 1px solid var(--line); padding-top: 12px; }
+
+.profile-button {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 8px 14px; border: 1px solid rgba(67, 225, 180, .35); border-radius: 8px;
+  background: rgba(67, 225, 180, .08); color: var(--mint-soft);
+  font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.profile-button:hover:not(:disabled) { background: rgba(67, 225, 180, .14); }
+/* .spin 的动画在 crm.css 定义；本页自带一份（同 keyframes spin），不依赖其它视图的 css 加载顺序。 */
+.profile-panel .spin { animation: spin .8s linear infinite; }
+
+.profile-test__row { display: flex; align-items: center; gap: 9px; margin: 0; color: var(--text-soft); font-size: 12px; }
+.profile-test__row[data-state="mismatch"] span { color: var(--amber); }
+
+/* ---- prefs 开关组（形态照设置页 .demo-toggle） ---- */
+.profile-pref { display: flex; align-items: center; gap: 12px; }
+.profile-pref__copy { display: flex; flex-direction: column; gap: 2px; }
+.profile-pref__copy strong { font-size: 12px; }
+.profile-pref__copy small { color: var(--text-dim); font-size: 11px; }
+
+.profile-toggle {
+  display: inline-flex; align-items: center; gap: 9px; flex: 0 0 auto;
+  padding: 7px 12px; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--panel-2); color: var(--text-soft); cursor: pointer; font-size: 11px;
+}
+.profile-toggle:hover:not(:disabled) { border-color: rgba(67, 225, 180, .3); }
+.profile-toggle__knob {
+  position: relative; width: 28px; height: 15px; border-radius: 999px;
+  background: var(--line-bright); transition: background .2s ease;
+}
+.profile-toggle__knob::after {
+  content: ""; position: absolute; top: 2px; left: 2px;
+  width: 11px; height: 11px; border-radius: 50%;
+  background: var(--text-dim); transition: transform .2s ease, background .2s ease;
+}
+.profile-toggle.is-on .profile-toggle__knob { background: rgba(67, 225, 180, .35); }
+.profile-toggle.is-on .profile-toggle__knob::after { transform: translateX(13px); background: var(--mint); }
+.profile-toggle__label { min-width: 40px; text-align: left; }

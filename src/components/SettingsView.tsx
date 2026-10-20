@@ -158,6 +158,8 @@ function buildViewCapabilities(ctx: CapabilityContext): readonly CapabilityRow[]
     { id: "sync", name: "同步中心", description: "数据源健康、手动同步与环境体检" },
     { id: "ops", name: "运营推广", description: "运营摘要 / 推广卡片 / 微信登记（摘要只读）" },
     { id: "agents", name: "数字员工", description: "QoderWake daemon / AgentLoop 观测 / 微信快照（全只读）" },
+    { id: "ontology", name: "本体管理", description: "知识本体策展操作日志 + 派生图 + 审计（本地读写）" },
+    { id: "profile", name: "个人中心", description: "BUC 会话管理与判活（cookie 仅掩码展示，0600 存储）" },
     { id: "settings", name: "设置", description: "能力清单、配置状态、数据新鲜度与演示模式（本页）" },
   ];
   const notes: Readonly<Record<string, string>> = {
@@ -165,6 +167,7 @@ function buildViewCapabilities(ctx: CapabilityContext): readonly CapabilityRow[]
     inbox: "钉钉真实回复未开通（见全局能力）",
     ask: "未配置百炼密钥时自动降级为关键词检索（实际配置见下方体检）",
     agents: "凭据管理与出票未开通（见全局能力）",
+    profile: "判活需先粘贴 BUC 会话；未设置时视图如实引导，chrome 自动提取未接入",
   };
   return rows.map((row) => {
     const derived = viewCapability(ctx, row.id);
@@ -462,7 +465,7 @@ function CapabilitySection({ viewRows, globalRows }: { viewRows: readonly Capabi
       </div>
       <div className="settings-panel__body">
         <div className="settings-cap-group">
-          <h3>视图能力（17 个视图）</h3>
+          <h3>视图能力（{viewRows.length} 个视图）</h3>
           {viewRows.map((row) => <CapabilityRowView key={row.id} row={row} />)}
         </div>
         <div className="settings-cap-group">

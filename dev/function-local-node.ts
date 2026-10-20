@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { Readable } from "node:stream";
 
 import { handler } from "../functions/handler.ts";
 import { createLocalRouter } from "./local-router.ts";
@@ -54,6 +55,20 @@ async function route(fetchRequest: Request): Promise<Response> {
 async function sendResponse(response: Response, target: ServerResponse): Promise<void> {
   target.statusCode = response.status;
   response.headers.forEach((value, name) => target.setHeader(name, value));
+  const contentType = response.headers.get("content-type") ?? "";
+  // SSE（/local/events）是永不结束的流：整包 arrayBuffer 会挂死响应头，必须流式转发；
+  // 客户端断开时销毁上游流，触发桥侧 cancel 清理订阅。
+  if (contentType.includes("text/event-stream") && response.body) {
+    const stream = Readable.fromWeb(response.body as import("node:stream/web").ReadableStream);
+    const done = new Promise<void>((resolve) => {
+      target.on("finish", () => resolve());
+      target.on("close", () => { stream.destroy(); resolve(); });
+      stream.on("error", () => { target.destroy(); resolve(); });
+    });
+    stream.pipe(target);
+    await done;
+    return;
+  }
   target.end(Buffer.from(await response.arrayBuffer()));
 }
 

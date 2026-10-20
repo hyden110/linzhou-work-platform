@@ -28,6 +28,9 @@ import { createLeadsBridge, LeadsSyncError, type LeadsBridge } from "./leads-bri
 import { createReportBridge, ReportBridgeError, type ReportBridge } from "./report-bridge.ts";
 import { createNotifyBridge, NotifyBridgeError, type NotifyBridge } from "./notify-bridge.ts";
 import { createAgentsBridge, AgentsBridgeError, type AgentsBridge } from "./agents-bridge.ts";
+import { createProfileBridge, type ProfileBridge } from "./profile-bridge.ts";
+import { createOntologyBridge, type OntologyBridge } from "./ontology-bridge.ts";
+import { createBus, createProducers, handleEvents, LIVE_EVENTS_PATH, type Bus, type Producers } from "./live-bridge.ts";
 
 /**
  * Router for the local-only endpoints that back the workbench's "open on this Mac",
@@ -138,6 +141,10 @@ export interface LocalRouterDependencies {
   readonly reportBridge?: ReportBridge;
   readonly notifyBridge?: NotifyBridge;
   readonly agentsBridge?: AgentsBridge;
+  readonly profileBridge?: ProfileBridge;
+  readonly ontologyBridge?: OntologyBridge;
+  readonly liveBus?: Bus;
+  readonly liveProducers?: Producers;
 }
 
 /** 稳定错误码 → HTTP 状态映射（report）：unconfigured=400（含参数/白名单拒绝），其余 502。 */
@@ -202,6 +209,12 @@ export function createLocalRouter(dependencies: LocalRouterDependencies) {
   const reportBridge = dependencies.reportBridge ?? createReportBridge();
   const notifyBridge = dependencies.notifyBridge ?? createNotifyBridge();
   const agentsBridge = dependencies.agentsBridge ?? createAgentsBridge();
+  const profileBridge = dependencies.profileBridge ?? createProfileBridge();
+  const ontologyBridge = dependencies.ontologyBridge ?? createOntologyBridge();
+  const liveBus = dependencies.liveBus ?? createBus();
+  const liveProducers = dependencies.liveProducers
+    ?? createProducers({ cacheDir: join(PROJECT_ROOT, ".local-cache"), bus: liveBus });
+  liveProducers.start();
   const allowedOrigins = new Set(dependencies.allowedOrigins ?? DEFAULT_ALLOWED_ORIGINS);
   const allowedHosts = new Set([
     `127.0.0.1:${dependencies.port}`,
@@ -738,6 +751,25 @@ export function createLocalRouter(dependencies: LocalRouterDependencies) {
         return agentsFailure(error);
       }
     }
+
+    // 实时事件总线：SSE 流式响应（hello 首帧 + 25s ping + topics/since 校验 + 回环 403），
+    // 需 dev/function-local-node.ts 对 text/event-stream 做流式转发。
+    if (route === LIVE_EVENTS_PATH && request.method === "GET") {
+      return handleEvents(request, liveBus);
+    }
+
+    // 本体管理（策展操作日志 + 派生图 + 审计）：子路由委托，非本体路径返回 undefined。
+    if (route === "/local/ontology" || route === "/local/ontology/graph" || route === "/local/ontology/action") {
+      const routed = await ontologyBridge.handle(request);
+      if (routed) return routed;
+    }
+
+    // 个人中心（Cookie/BUC 会话与判活）：桥自带掩码、0600 存储与错误状态码。
+    if (route === "/local/profile" && request.method === "GET") return profileBridge.view(request);
+    if (route === "/local/profile/session" && request.method === "PUT") return profileBridge.putSession(request);
+    if (route === "/local/profile/session" && request.method === "DELETE") return profileBridge.deleteSession(request);
+    if (route === "/local/profile/test" && request.method === "POST") return profileBridge.testSession(request);
+    if (route === "/local/profile/prefs" && request.method === "PUT") return profileBridge.putPrefs(request);
 
     return jsonResponse({ ok: false, error: "method_not_allowed" }, 405, { Allow: "GET, POST, DELETE" });
   };

@@ -9,6 +9,8 @@ import { DingtalkView } from "./components/crm/DingtalkView";
 import { PplFollowupView } from "./components/crm/PplFollowupView";
 import { LeadsView } from "./components/crm/LeadsView";
 import { InboxView } from "./components/InboxView";
+import { OntologyView } from "./components/OntologyView";
+import { ProfileView } from "./components/ProfileView";
 import { NotifyBell } from "./components/NotifyBell";
 import { KnowledgeMapView } from "./components/KnowledgeMapView";
 import { ReportsView } from "./components/report/ReportsView";
@@ -50,6 +52,8 @@ const viewTitles: Record<ViewId, string> = {
   report: "日周报",
   inbox: "消息中心",
   agents: "数字员工",
+  ontology: "本体管理",
+  profile: "个人中心",
   settings: "设置",
 };
 
@@ -215,6 +219,8 @@ function Workbench() {
     report: <ReportsView />,
     inbox: <InboxView />,
     agents: <AgentsView />,
+    ontology: <OntologyView />,
+    profile: <ProfileView {...commonProps} />,
     settings: <SettingsView {...commonProps} />,
   }[activeView];
 
