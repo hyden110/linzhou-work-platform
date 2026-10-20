@@ -1,28 +1,42 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ChevronRight, Search } from "lucide-react";
+import { createPortal } from "react-dom";
+import { ChevronDown, ChevronRight, LoaderCircle, Search, Sparkles, X } from "lucide-react";
+import { loadTriage, type TriageMap } from "../../lib/action-feed";
+import { crmErrorMessage, fetchInsight, startInsight } from "../../lib/crm-client";
 import {
+  STAGES,
   customerLifecycle,
   filterFollowupByStage,
   pplFollowupBoard,
+  projectStage,
   projectsByCustomer,
 } from "../../lib/crm-model";
 import type { CustomerLifecycle, MaasOverrides, MaasStatus, PplFollowupCustomer } from "../../lib/crm-model";
-import type { MaasCandidatesFile, ProjectItem } from "../../lib/crm-types";
+import type { CustomerItem, InsightRecord, MaasCandidatesFile, ProjectItem } from "../../lib/crm-types";
 import {
-  PplClientError,
+  LIFECYCLE_PHASES,
+  TOUCH_SOURCE_LABEL,
+  customerTimeline,
+  filterFollowupByPhase,
+  phaseNavCounts,
+} from "../../lib/lifecycle-model";
+import type { PhaseKey, TouchSource } from "../../lib/lifecycle-model";
+import {
   MAAS_SCREEN_VALUE,
+  PplClientError,
   fetchMaasCandidates,
   fetchMaasOverridesState,
+  fetchPplInspection,
   maasReviewChoice,
   maasReviewSelection,
   pplErrorMessage,
   saveMaasOverride,
 } from "../../lib/ppl-client";
-import type { MaasOverrideStatus } from "../../lib/ppl-client";
-import { ViewHeading } from "../shared";
+import type { MaasOverrideStatus, PplInspectionBundle } from "../../lib/ppl-client";
+import { StatusBadge, ViewHeading } from "../shared";
 import { useCrm } from "./CrmProvider";
-import { CustomerDrawer } from "./CustomerDrawer";
 import { CrmGate, RefreshControl, SourceBanner, formatDateTime, formatGaap } from "./crm-shared";
+import "../../lifecycle.css";
 
 /**
  * 人工覆盖表加载：优先本机 .local-cache/maas-overrides.json（可写可审计），
@@ -66,6 +80,282 @@ const MAAS_BADGE_LABEL: Record<MaasStatus, string> = {
   non_maas: "非 MaaS",
   unconfirmed: "未分类",
 };
+
+// ---------------------------------------------------------------------------
+// 触达时间轴（lifecycle-model）：来源徽章色调 + 日粒度格式化
+// ---------------------------------------------------------------------------
+
+const TOUCH_TONE: Record<TouchSource, "green" | "amber" | "blue" | "muted"> = {
+  followup: "green",
+  relate: "blue",
+  project: "muted",
+  contract: "amber",
+  gaap: "amber",
+  inspection: "blue",
+  approval: "green",
+  triage: "muted",
+};
+
+function formatTimelineDay(ms: number): string {
+  return new Date(ms).toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" });
+}
+
+type InspectionFetchState = "loading" | "ready" | "unavailable";
+
+/** 时间轴本机来源：PPL 巡检产物（打开抽屉时拉一次）+ 行动队列 triage（localStorage）。 */
+function useTimelineSources(cid: string) {
+  const [inspection, setInspection] = useState<PplInspectionBundle | null>(null);
+  const [inspectionState, setInspectionState] = useState<InspectionFetchState>("loading");
+  const [triage] = useState<TriageMap>(() => loadTriage());
+  // 计划/实际标记的基准时刻：抽屉打开时固定，避免渲染期间跳动。
+  const [now] = useState(() => Date.now());
+
+  useEffect(() => {
+    let cancelled = false;
+    setInspection(null);
+    setInspectionState("loading");
+    fetchPplInspection()
+      .then((bundle) => {
+        if (cancelled) return;
+        setInspection(bundle);
+        setInspectionState("ready");
+      })
+      .catch(() => {
+        if (!cancelled) setInspectionState("unavailable");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [cid]);
+
+  return { inspection, inspectionState, triage, now };
+}
+
+function TouchTimelineSection({
+  customer,
+  projects,
+  inspection,
+  inspectionState,
+  triage,
+  now,
+}: {
+  customer: CustomerItem;
+  projects: readonly ProjectItem[];
+  inspection: PplInspectionBundle | null;
+  inspectionState: InspectionFetchState;
+  triage: TriageMap;
+  now: number;
+}) {
+  const timeline = customerTimeline({ customer, projects, inspection, triage, now });
+  return (
+    <section className="crm-drawer__section">
+      <h3>触达时间轴 <small>{timeline.events.length} 条 · 跳过 {timeline.skipped} 条无法定位</small></h3>
+      <p className="crm-table-note">
+        合并本机八源：跟进 / 关联 / 项目创建 / 预计签约 / GAAP 起算 / 巡检推荐 / 授权决策 / 行动队列处理记录；
+        缺失或无法解析的时间不计入、不臆造（计入「跳过」）。
+      </p>
+      {inspectionState === "unavailable" && (
+        <p className="crm-muted">本机巡检产物暂不可用，时间轴暂不含巡检 / 授权事件。</p>
+      )}
+      {timeline.events.length === 0
+        ? <p className="crm-muted">尚无可定位的触达事件。</p>
+        : (
+          <ul className="lifecycle-timeline">
+            {timeline.events.map((event) => (
+              <li key={event.key} className="lifecycle-timeline__item">
+                <time dateTime={new Date(event.at).toISOString()}>
+                  {event.dayOnly ? formatTimelineDay(event.at) : formatDateTime(event.at)}
+                </time>
+                <StatusBadge tone={TOUCH_TONE[event.source]}>{TOUCH_SOURCE_LABEL[event.source]}</StatusBadge>
+                <div className="lifecycle-timeline__body">
+                  <strong>{event.title}</strong>
+                  {event.detail && <span>{event.detail}</span>}
+                </div>
+                <span className={`lifecycle-timeline__mark${event.planned ? " is-planned" : ""}`}>
+                  {event.planned ? "计划" : "实际"}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 客户详情抽屉（PPL 视图本地等价物）：与 CustomerDrawer 同结构（客户事实 / 在途
+// 项目 / ECID 待接入说明 / FBI 解读），本批次新增「触达时间轴」段。
+// 受文件边界约束不改动 CustomerDrawer.tsx（客户视图继续用它），FBI 轮询逻辑为
+// 同语义受约束复刻；后续可将两者抽成共享 hook。
+// ---------------------------------------------------------------------------
+
+const INSIGHT_POLL_MS = 10_000;
+const REUSE_MS = 24 * 3_600_000;
+
+function useInsightRecord(cid: string) {
+  const [record, setRecord] = useState<InsightRecord | null>(null);
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const active = useRef(cid);
+
+  useEffect(() => {
+    active.current = cid;
+    setRecord(null);
+    setError("");
+    fetchInsight(cid)
+      .then((value) => { if (active.current === cid) setRecord(value); })
+      .catch((caught: unknown) => { if (active.current === cid) setError(crmErrorMessage(caught)); });
+  }, [cid]);
+
+  const running = record?.state === "running";
+  useEffect(() => {
+    if (!running) return;
+    const timer = window.setInterval(() => {
+      fetchInsight(cid)
+        .then((value) => { if (active.current === cid) setRecord(value); })
+        .catch((caught: unknown) => { if (active.current === cid) setError(crmErrorMessage(caught)); });
+    }, INSIGHT_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [cid, running]);
+
+  const start = useCallback(() => {
+    setSubmitting(true);
+    setError("");
+    startInsight(cid)
+      .then((value) => { if (active.current === cid) setRecord(value); })
+      .catch((caught: unknown) => { if (active.current === cid) setError(crmErrorMessage(caught)); })
+      .finally(() => setSubmitting(false));
+  }, [cid]);
+
+  return { record, error, submitting, start };
+}
+
+function InsightSection({ cid }: { cid: string }) {
+  const { record, error, submitting, start } = useInsightRecord(cid);
+  const running = record?.state === "running";
+  const fresh = record?.state === "done" && Date.now() - new Date(record.createdAt).getTime() < REUSE_MS;
+  const canStart = !submitting && !running && !fresh;
+  return (
+    <section className="crm-insight">
+      <header>
+        <div><span className="eyebrow">FBI</span><h3>消耗异动解读</h3></div>
+        <button className="primary-button" onClick={start} disabled={!canStart}>
+          {submitting || running ? <LoaderCircle className="spin" size={14} /> : <Sparkles size={14} />}
+          {running ? "FBI 分析中" : fresh ? "今日已生成" : record?.state === "done" ? "重新解读" : "生成解读"}
+        </button>
+      </header>
+      <p className="crm-insight__note">由本机 FBI 助手生成，同一客户 24 小时内只分析一次；分析通常需要几分钟，可关闭抽屉稍后再看。</p>
+      {error && <p className="crm-insight__error">{error}</p>}
+      {record && (
+        <div className="crm-insight__body">
+          <small>
+            {record.state === "running" && `已提交 ${formatDateTime(record.createdAt)}，完成后自动显示`}
+            {record.state === "done" && `生成于 ${formatDateTime(record.finishedAt ?? record.createdAt)}`}
+            {record.state === "failed" && "上次解读未完成，可以重新提交"}
+          </small>
+          {record.state === "done" && <div className="crm-insight__answer">{record.answer ?? "FBI 未返回文字结论。"}</div>}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function PplCustomerDrawer({
+  row,
+  projects,
+  onClose,
+}: {
+  row: CustomerLifecycle;
+  projects: readonly ProjectItem[];
+  onClose: () => void;
+}) {
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const { customer } = row;
+  const stage = STAGES.find((item) => item.id === row.stage);
+  const { inspection, inspectionState, triage, now } = useTimelineSources(customer.cid);
+
+  useEffect(() => {
+    closeRef.current?.focus();
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const rate = customer.yesterdayGaapRate;
+  const facts: [string, string][] = [
+    ["行业", customer.industry ?? "—"],
+    ["区域", customer.area ?? "—"],
+    ["等级", customer.level ?? "—"],
+    ["上月 GAAP", formatGaap(customer.lastMonthGaap)],
+    ["昨日 GAAP", `${formatGaap(customer.yesterdayGaap)}${rate === null ? "" : `（${rate > 0 ? "+" : ""}${rate.toFixed(1)}%）`}`],
+    ["最近拜访记录", formatDateTime(customer.lastNoteAt)],
+  ];
+
+  return createPortal(
+    <>
+      <button className="crm-drawer__scrim" onClick={onClose} aria-label="关闭客户详情" tabIndex={-1} />
+      <aside className="crm-drawer" role="dialog" aria-modal="true" aria-labelledby="crm-drawer-title">
+        <header className="crm-drawer__header">
+          <div>
+            <span className="eyebrow">CID {customer.cid}</span>
+            <h2 id="crm-drawer-title">{customer.name}</h2>
+            {stage && <StatusBadge>{stage.id} · {stage.label}</StatusBadge>}
+          </div>
+          <button ref={closeRef} className="icon-button" onClick={onClose} aria-label="关闭"><X size={17} /></button>
+        </header>
+
+        <dl className="crm-facts">
+          {facts.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
+        </dl>
+
+        <section className="crm-drawer__section">
+          <h3>在途项目 <small>{row.activeProjects.length}</small></h3>
+          {row.activeProjects.length === 0
+            ? <p className="crm-muted">鲲鹏中没有在途项目。</p>
+            : (
+              <ul className="crm-projects">
+                {row.activeProjects.map((project) => (
+                  <li key={project.id} className={project.id === row.leadProject?.id ? "is-lead" : undefined}>
+                    <strong>{project.name}</strong>
+                    <span>
+                      {projectStage(project)} · {project.stageName ?? "阶段未知"}
+                      {project.winRate !== null && ` · 赢率 ${project.winRate}%`}
+                      {project.price !== null && ` · ${formatGaap(project.price)}`}
+                    </span>
+                    {project.expectedContractDate && <small>预计签约 {formatDateTime(project.expectedContractDate)}</small>}
+                  </li>
+                ))}
+              </ul>
+            )}
+        </section>
+
+        <TouchTimelineSection
+          customer={customer}
+          projects={projects}
+          inspection={inspection}
+          inspectionState={inspectionState}
+          triage={triage}
+          now={now}
+        />
+
+        <section className="crm-drawer__section">
+          <h3>ECID 画像 <small>鲲鹏企业画像</small></h3>
+          <p className="crm-muted">
+            本轮不展示画像数值：鲲鹏 CLI 的 customers 行没有 ecid 字段（CID ≠ ECID），
+            直接查询会返回「提交的 ecid 不存在」，value 等画像接口对无效 ID 不报错、只返回全空。
+            CID → ECID 的取数口径确认后再接入，这里不会用占位数字代替。
+          </p>
+          <button className="primary-button" disabled title="CID → ECID 口径待定，暂无法取数">
+            ECID 画像待接入（CID → ECID 口径待定）
+          </button>
+        </section>
+
+        <InsightSection cid={customer.cid} />
+      </aside>
+    </>,
+    document.body,
+  );
+}
 
 function PplCard({ project }: { project: ProjectItem }) {
   return (
@@ -116,6 +406,7 @@ export function PplFollowupView() {
   const [openCid, setOpenCid] = useState("");
   const [keyword, setKeyword] = useState("");
   const [stageFilter, setStageFilter] = useState("");
+  const [phase, setPhase] = useState<PhaseKey | null>(null);
   const [activeLane, setActiveLane] = useState<MaasStatus>("maas");
   const [overrides, setOverrides] = useState<MaasOverrides>({});
   const [reviewOpen, setReviewOpen] = useState(false);
@@ -146,6 +437,7 @@ export function PplFollowupView() {
     () => (snapshot ? pplFollowupBoard(snapshot, overrides) : null),
     [snapshot, overrides],
   );
+  const navCounts = useMemo(() => (board ? phaseNavCounts(board) : null), [board]);
   const stageNames = useMemo(() => {
     if (!snapshot) return [];
     return [...new Set(snapshot.projects.map((project) => project.stageName ?? "").filter(Boolean))].sort((a, b) => a.localeCompare(b, "zh-CN"));
@@ -154,7 +446,9 @@ export function PplFollowupView() {
   const needle = keyword.trim().toLowerCase();
   const filtered = useMemo(() => {
     if (!board) return null;
-    const byStage = filterFollowupByStage(board, stageFilter === "" ? null : stageFilter);
+    // 阶段（A→D / 未归类）→ 阶段名（精确）→ 客户名搜索，三层过滤依次收窄。
+    const byPhase = filterFollowupByPhase(board, phase);
+    const byStage = filterFollowupByStage(byPhase, stageFilter === "" ? null : stageFilter);
     if (!needle) return byStage;
     const match = (row: PplFollowupCustomer) => row.customer.name.toLowerCase().includes(needle);
     return {
@@ -165,18 +459,22 @@ export function PplFollowupView() {
         unconfirmed: byStage.lanes.unconfirmed.filter(match),
       },
     };
-  }, [board, needle, stageFilter]);
+  }, [board, needle, phase, stageFilter]);
 
+  const groupedProjects = useMemo(
+    () => (snapshot ? projectsByCustomer(snapshot.customers, snapshot.projects) : new Map<string, ProjectItem[]>()),
+    [snapshot],
+  );
   const lifecycleRows = useMemo(() => {
     if (!snapshot) return new Map<string, CustomerLifecycle>();
-    const grouped = projectsByCustomer(snapshot.customers, snapshot.projects);
     return new Map(snapshot.customers.map((customer) => [
       customer.cid,
-      customerLifecycle(customer, grouped.get(customer.cid) ?? []),
+      customerLifecycle(customer, groupedProjects.get(customer.cid) ?? []),
     ] as const));
-  }, [snapshot]);
+  }, [snapshot, groupedProjects]);
 
   const openRow = openCid ? lifecycleRows.get(openCid) ?? null : null;
+  const openProjects = openRow ? groupedProjects.get(openRow.customer.cid) ?? [] : [];
   const customersReady = snapshot?.sources.customers?.status === "ok";
   const visibleProjects = filtered
     ? Object.values(filtered.lanes).reduce((sum, lane) => sum + lane.reduce((count, row) => count + row.projects.length, 0), 0)
@@ -238,6 +536,40 @@ export function PplFollowupView() {
         {snapshot && filtered && (
           <>
             <SourceBanner keys={["customers", "projects"]} />
+            {navCounts && board && (
+              <nav className="panel lifecycle-nav" aria-label="PPL 生命周期阶段导航">
+                <div className="lifecycle-nav__tabs">
+                  <button
+                    type="button"
+                    className="lifecycle-nav__tab"
+                    data-active={phase === null}
+                    onClick={() => setPhase(null)}
+                  >
+                    <b><i>ALL</i>全部</b>
+                    <span>{navCounts.totalProjects} 项目 · {board.counts.customers} 客户</span>
+                  </button>
+                  {LIFECYCLE_PHASES.map((meta) => (
+                    <button
+                      key={meta.id}
+                      type="button"
+                      className="lifecycle-nav__tab"
+                      data-active={phase === meta.id}
+                      onClick={() => setPhase((current) => (current === meta.id ? null : meta.id))}
+                      title={meta.hint}
+                      aria-pressed={phase === meta.id}
+                    >
+                      <b><i>{meta.id === "unclassified" ? "?" : meta.id}</i>{meta.name}</b>
+                      <span>{navCounts.phases[meta.id].projects} 项目 · {navCounts.phases[meta.id].customers} 客户</span>
+                    </button>
+                  ))}
+                </div>
+                <p className="lifecycle-nav__note">
+                  A→D 按鲲鹏阶段名精确映射（未知阶段不按 code / 赢率猜）；未匹配项目 {navCounts.unmatchedProjects}
+                  {" · "}无 PPL 客户 {navCounts.customersWithoutPpl}（不落阶段）
+                  {phase !== null && " · 已按生命周期阶段过滤，点「全部」或再次点击当前阶段恢复"}
+                </p>
+              </nav>
+            )}
             <section className="panel crm-toolbar">
               <span className="crm-toolbar__summary">
                 {customersReady
@@ -403,7 +735,14 @@ export function PplFollowupView() {
                 )}
             </section>
 
-            {openRow && <CustomerDrawer row={openRow} onClose={closeDrawer} />}
+            {openRow && (
+              <PplCustomerDrawer
+                key={openRow.customer.cid}
+                row={openRow}
+                projects={openProjects}
+                onClose={closeDrawer}
+              />
+            )}
           </>
         )}
       </CrmGate>
