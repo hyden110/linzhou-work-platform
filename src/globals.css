@@ -831,8 +831,17 @@ select { padding: 6px 28px 6px 9px; }
 .ops-entry time { color: var(--text-dim); font: 10px ui-monospace, monospace; white-space: nowrap; }
 
 .ops-wechat__form { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 14px 16px 4px; color: var(--text-dim); }
-.ops-wechat__form input { width: 100%; min-width: 0; height: 32px; padding: 0 10px; border: 1px solid var(--line-bright); border-radius: 6px; color: var(--text); background: #0a1114; font-size: 12px; outline: 0; }
+.ops-wechat__form input, .ops-wechat__form textarea { width: 100%; min-width: 0; padding: 7px 10px; border: 1px solid var(--line-bright); border-radius: 6px; color: var(--text); background: #0a1114; font-size: 12px; outline: 0; }
+.ops-wechat__form input { height: 32px; }
+.ops-wechat__form textarea { resize: vertical; min-height: 56px; font-family: inherit; font-size: 12px; line-height: 1.5; }
 .ops-wechat__error { margin: 8px 16px 0; color: var(--danger); font-size: 11px; }
+
+.ops-push__actions { display: flex; flex-wrap: wrap; gap: 9px; padding: 10px 16px 0; }
+.ops-push__confirm { border-color: color-mix(in srgb, var(--amber) 75%, transparent); color: var(--amber); }
+.ops-push__preview { display: grid; gap: 7px; margin: 12px 16px 14px; }
+.ops-push__meta { display: flex; align-items: center; gap: 10px; }
+.ops-push__meta small, .ops-push__preview > small { color: var(--text-dim); font-size: 10px; }
+.ops-push__preview pre { overflow-x: auto; max-height: 320px; margin: 0; padding: 10px 12px; border: 1px solid var(--line-bright); border-radius: 8px; background: #0a1114; color: var(--text); font: 11px/1.6 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 @media (max-width: 560px) {
   .ops-source-row { grid-template-columns: minmax(0, 1fr) auto; }

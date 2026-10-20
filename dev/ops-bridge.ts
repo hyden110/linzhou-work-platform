@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join, resolve as resolvePath } from "node:path";
 
@@ -24,6 +25,7 @@ const OPS_AI_TIMEOUT_MS = 20_000;
 const OPS_AI_MAX_OUTPUT_CHARS = 300;
 const OPS_WECHAT_FETCH_TIMEOUT_MS = 15_000;
 const OPS_MAX_REDIRECT_HOPS = 5;
+const OPS_PUSH_TIMEOUT_MS = 60_000;
 const OPS_PUSH_RECEIVER_PATTERN = /^[A-Za-z0-9]{8,128}$/;
 const OPS_FETCH_HOSTS = new Set([
   "qoder.com", "www.qoder.com", "qoder.com.cn", "www.qoder.com.cn",
@@ -121,12 +123,36 @@ export interface OpsPushPreview {
   readonly entryCount: number;
   /** Only ever the env-configured single-chat receiver id, never a group id. */
   readonly receiverConfigured: boolean;
+  /** 内容指纹（sha256(cardText+卡片 generatedAt) 前 16 位）：真发必须逐次携带且与最近一次 dry-run 一致。 */
+  readonly previewId: string;
   readonly note: string;
+}
+
+/**
+ * Push is a two-step protocol: an explicit dry-run mints a previewId, and a
+ * real send must echo it back with confirm:true. Anything else never reaches dws.
+ */
+export interface PushCardInput {
+  readonly dryRun?: boolean;
+  readonly confirm?: boolean;
+  readonly previewId?: string;
 }
 
 export type PushCardResult =
   | { readonly ok: true; readonly preview: OpsPushPreview }
-  | { readonly ok: false; readonly error: "digest_unavailable" | "push_disabled" | "recipient_not_configured" | "push_failed" };
+  | {
+    readonly ok: false;
+    readonly error:
+      | "digest_unavailable"
+      | "push_disabled"
+      | "recipient_not_configured"
+      | "push_failed"
+      | "push_uncertain"
+      | "push_in_progress"
+      | "preview_consumed"
+      | "preview_required"
+      | "preview_stale";
+  };
 
 export type RegisterWechatResult =
   | { readonly ok: true; readonly link: OpsWechatLink }
@@ -139,8 +165,8 @@ export interface OpsBridge {
   readonly card: () => Promise<OpsCard | undefined>;
   readonly wechatLinks: () => Promise<readonly OpsWechatLink[]>;
   readonly registerWechatLink: (url: string) => Promise<RegisterWechatResult>;
-  /** Render the daily ops card into a DingTalk streaming-text card. Dry-run only unless explicitly enabled. */
-  readonly pushCard: () => Promise<PushCardResult>;
+  /** Dry-run mints a previewId; a real send must confirm with the same id. Dry-run never calls dws. */
+  readonly pushCard: (input?: PushCardInput) => Promise<PushCardResult>;
 }
 
 export interface OpsBridgeOptions {
@@ -313,6 +339,24 @@ export function buildPushCommand(receiverOpenId: string, cardText: string): read
     "--flow-status", "3",
     "--format", "json",
   ];
+}
+
+/**
+ * previewId 绑定卡片内容本身（cardText + 卡片 generatedAt 的 sha256 前 16 位）。
+ * 摘要一旦刷新导致内容变化，旧 previewId 自动失效 → preview_stale。
+ */
+export function pushPreviewId(cardText: string, cardGeneratedAt: string): string {
+  return createHash("sha256").update(`${cardText}\n${cardGeneratedAt}`).digest("hex").slice(0, 16);
+}
+
+/** Shape guard for the preview artifact read back on confirm; anything unreadable counts as stale. */
+function asPersistedPreview(raw: unknown): OpsPushPreview | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const record = raw as Partial<OpsPushPreview>;
+  if (typeof record.previewId !== "string" || !record.previewId) return undefined;
+  if (typeof record.cardText !== "string") return undefined;
+  if (record.mode !== "dry_run" && record.mode !== "sent") return undefined;
+  return record as OpsPushPreview;
 }
 
 function isPushEnabled(env: NodeJS.ProcessEnv): boolean {
@@ -488,6 +532,21 @@ export function createOpsBridge(options: OpsBridgeOptions = {}): OpsBridge {
   const env = options.env ?? process.env;
   const iso = () => new Date(now()).toISOString();
   let refresh: OpsRefreshStatus = { state: "idle", startedAt: null, finishedAt: null, error: null };
+  /**
+   * 真发单飞锁：同一时刻至多一个 dws 发送在途（与 previewId 无关）。
+   * consumedPreviewIds：进入发送前即标记已消费；发送成功后永久保留（本进程内）；
+   * dws 明确失败（非零退出码，push_failed）时撤销标记——沿用"失败不写 sent、可用同一 previewId 显式重试"的既有语义；
+   * 超时/进程异常（code=null，push_uncertain）结果未知，保留标记不可重试，须重新预览。
+   * 检查与标记在同一同步段内完成（中间无 await），因此并发确认不可能同时通过。
+   */
+  let pushInFlight = false;
+  let consumedPreviewIds: ReadonlySet<string> = new Set();
+  const pushPreviewPath = join(cacheDir, "ops-push-preview.json");
+  const persistPushPreview = async (preview: OpsPushPreview): Promise<OpsPushPreview> => {
+    await mkdir(cacheDir, { recursive: true, mode: 0o700 });
+    await writeJsonAtomic(pushPreviewPath, preview);
+    return preview;
+  };
 
   const readWechat = async () => {
     const raw = await readJson(wechatPath);
@@ -562,6 +621,64 @@ export function createOpsBridge(options: OpsBridgeOptions = {}): OpsBridge {
     };
   };
 
+  /**
+   * 真发路径（confirm）：总开关与接收人是硬前提（仅配置的本人单聊，代码无群发路径）；
+   * previewId 必须与最近一次 dry-run 及当前卡内容指纹一致，且未被消费、无在途发送。
+   */
+  const confirmSend = async (card: OpsCard, cardText: string, previewId: string, input: PushCardInput): Promise<PushCardResult> => {
+    if (!isPushEnabled(env)) return { ok: false, error: "push_disabled" };
+    const receiver = pushReceiver(env);
+    if (!receiver) return { ok: false, error: "recipient_not_configured" };
+    const requestedId = input.previewId;
+    if (typeof requestedId !== "string" || requestedId.length === 0) {
+      return { ok: false, error: "preview_required" };
+    }
+    const lastPreview = asPersistedPreview(await readJson(pushPreviewPath));
+    // 逐次确认：只认最近一次 dry-run 铸造的 previewId；已发送过的预览不复用。
+    if (!lastPreview || lastPreview.mode !== "dry_run" || lastPreview.previewId !== requestedId) {
+      return { ok: false, error: "preview_stale" };
+    }
+    // 确认期间摘要若刷新导致内容变化，旧预览作废，必须重新预览。
+    if (previewId !== requestedId) return { ok: false, error: "preview_stale" };
+    // ---- 同步临界段开始：从这里到 run() 调用前不得出现 await ----
+    if (pushInFlight) return { ok: false, error: "push_in_progress" };
+    if (consumedPreviewIds.has(previewId)) return { ok: false, error: "preview_consumed" };
+    pushInFlight = true;
+    consumedPreviewIds = new Set([...consumedPreviewIds, previewId]);
+    // ---- 同步临界段结束 ----
+    try {
+      const result = await run("dws", buildPushCommand(receiver, cardText), {
+        cwd: PROJECT_ROOT,
+        env: process.env,
+        timeoutMs: OPS_PUSH_TIMEOUT_MS,
+      }).catch(() => ({ code: null, stdout: "" }));
+      if (result.code === null) {
+        // 超时/进程异常：消息可能已送达，结果未知。保守起见保留"已消费"标记、不写 sent。
+        // previewId 由内容确定性派生，故本进程内同一内容不可再确认（防发两遍）；
+        // 用户核对钉钉确未收到时，可重启本机服务（清空内存标记）后重新预览发送。
+        return { ok: false, error: "push_uncertain" };
+      }
+      if (result.code !== 0) {
+        consumedPreviewIds = new Set([...consumedPreviewIds].filter((id) => id !== previewId));
+        return { ok: false, error: "push_failed" };
+      }
+      const preview = await persistPushPreview({
+        mode: "sent",
+        generatedAt: iso(),
+        date: card.date,
+        cardTitle: `运营推广日报 · ${card.date}`,
+        cardText,
+        entryCount: card.total,
+        receiverConfigured: true,
+        previewId,
+        note: "已通过 dws 单聊发送（仅用户本人）。再次发送前必须重新生成预览。",
+      });
+      return { ok: true, preview };
+    } finally {
+      pushInFlight = false;
+    }
+  };
+
   return {
     digest: async () => projectDigest(await readJson(digestPath)),
 
@@ -595,53 +712,30 @@ export function createOpsBridge(options: OpsBridgeOptions = {}): OpsBridge {
 
     wechatLinks: () => readWechat(),
 
-    pushCard: async () => {
+    pushCard: async (input = {}) => {
+      // 两步协议：显式 dryRun 铸造 previewId；真发必须 confirm:true 且 previewId
+      // 与最近一次 dry-run 完全一致。其余请求一律 preview_required，绝不触达 dws。
+      if (input.dryRun !== true && input.confirm !== true) {
+        return { ok: false, error: "preview_required" };
+      }
       // 内容只能来自当日卡产物：buildCard 读的就是 digest 投影 + overview 产物。
       const card = await buildCard();
       if (!card) return { ok: false, error: "digest_unavailable" };
       const cardText = buildPushCardText(card);
-      const enabled = isPushEnabled(env);
-      const receiver = pushReceiver(env);
-      const generatedAt = iso();
-      const previewPath = join(cacheDir, "ops-push-preview.json");
-      const persist = async (preview: OpsPushPreview) => {
-        await mkdir(cacheDir, { recursive: true, mode: 0o700 });
-        await writeJsonAtomic(previewPath, preview);
-        return preview;
-      };
+      const previewId = pushPreviewId(cardText, card.generatedAt);
+      if (input.dryRun !== true) return confirmSend(card, cardText, previewId, input);
 
-      if (!enabled) {
-        // 默认路径：只生成预览，绝不实际发送（dws 不被调用）。
-        const preview = await persist({
-          mode: "dry_run",
-          generatedAt,
-          date: card.date,
-          cardTitle: `运营推广日报 · ${card.date}`,
-          cardText,
-          entryCount: card.total,
-          receiverConfigured: receiver !== null,
-          note: "dry-run 预览：未实际发送。确认内容后设置 OPS_DINGTALK_PUSH_ENABLED=1 并配置 OPS_DINGTALK_PUSH_OPEN_DINGTALK_ID 才会真发（仅单聊用户本人）。",
-        });
-        return { ok: true, preview };
-      }
-      if (!receiver) return { ok: false, error: "recipient_not_configured" };
-
-      const command = buildPushCommand(receiver, cardText);
-      const result = await run("dws", command, {
-        cwd: PROJECT_ROOT,
-        env: process.env,
-        timeoutMs: 60_000,
-      }).catch(() => ({ code: null, stdout: "" }));
-      if (result.code !== 0) return { ok: false, error: "push_failed" };
-      const preview = await persist({
-        mode: "sent",
-        generatedAt,
+      // dry-run：只生成预览与 previewId，绝不实际发送（dws 不被调用），不依赖总开关。
+      const preview = await persistPushPreview({
+        mode: "dry_run",
+        generatedAt: iso(),
         date: card.date,
         cardTitle: `运营推广日报 · ${card.date}`,
         cardText,
         entryCount: card.total,
-        receiverConfigured: true,
-        note: "已通过 dws 单聊发送（仅用户本人）。",
+        receiverConfigured: pushReceiver(env) !== null,
+        previewId,
+        note: `dry-run 预览：未实际发送。确认内容后携带 previewId（${previewId}）与 confirm:true 再次调用才会真发；总开关 OPS_DINGTALK_PUSH_ENABLED 与接收人（仅本人单聊）仍必须配置。`,
       });
       return { ok: true, preview };
     },

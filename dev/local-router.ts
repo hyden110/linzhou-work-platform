@@ -489,11 +489,20 @@ export function createLocalRouter(dependencies: LocalRouterDependencies) {
     }
 
     if (route === "/local/ops/push" && request.method === "POST") {
-      const result = await opsBridge.pushCard();
+      // 两步协议：{dryRun:true} 铸造 previewId；{confirm:true, previewId} 真发；
+      // 其余 body 一律 preview_required（无 confirm 绝不发送）。
+      const body = await readJsonBody(request);
+      const result = await opsBridge.pushCard({
+        dryRun: body?.dryRun === true,
+        confirm: body?.confirm === true,
+        previewId: typeof body?.previewId === "string" ? body.previewId : undefined,
+      });
       if (!result.ok) {
         const status = result.error === "digest_unavailable" ? 404
-          : result.error === "recipient_not_configured" || result.error === "push_disabled" ? 400
-            : 500;
+          : result.error === "preview_stale" || result.error === "preview_consumed" || result.error === "push_in_progress" ? 409
+            : result.error === "preview_required" || result.error === "recipient_not_configured" || result.error === "push_disabled" ? 400
+              : result.error === "push_uncertain" ? 502
+                : 500;
         return jsonResponse({ ok: false, error: result.error }, status);
       }
       return jsonResponse({ ok: true, data: result.preview }, result.preview.mode === "sent" ? 200 : 202);

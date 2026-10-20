@@ -6,6 +6,7 @@ import {
   groupOpsItemsByDay,
   opsStatusLabel,
   opsStatusTone,
+  splitWechatLinks,
 } from "./ops-model.ts";
 import type { OpsItem } from "./ops-types.ts";
 
@@ -69,4 +70,27 @@ test("maps source statuses to honest labels and tones", () => {
   assert.equal(opsStatusLabel("missing"), "未同步");
   assert.equal(opsStatusTone("missing"), "muted");
   assert.equal(opsStatusLabel("auth_required"), "待授权");
+});
+
+test("splitWechatLinks splits on whitespace lines, dedupes and rejects non-http(s)", () => {
+  const raw = [
+    "https://mp.weixin.qq.com/s/aaa111",
+    "", // 空行忽略
+    "https://mp.weixin.qq.com/s/aaa111", // 重复去重
+    "https://mp.weixin.qq.com/s/bbb222",
+    "ftp://mp.weixin.qq.com/s/nope", // 非 http(s) 拒绝
+    "随便一段文字", // 拒绝
+  ].join("\n");
+  const { valid, invalid } = splitWechatLinks(raw);
+  assert.deepEqual(valid, ["https://mp.weixin.qq.com/s/aaa111", "https://mp.weixin.qq.com/s/bbb222"]);
+  assert.deepEqual(invalid, ["ftp://mp.weixin.qq.com/s/nope", "随便一段文字"]);
+  // 同行空格分隔也能拆出 URL；拆出的无协议片段如实拒绝，不猜测补全。
+  const spaced = splitWechatLinks("https://mp.weixin.qq.com/s/d1 https://mp.weixin.qq.com/s/d2 tail");
+  assert.deepEqual(spaced.valid, ["https://mp.weixin.qq.com/s/d1", "https://mp.weixin.qq.com/s/d2"]);
+  assert.deepEqual(spaced.invalid, ["tail"]);
+  // 逗号/分号分隔同样支持（粘贴习惯）。
+  const comma = splitWechatLinks("https://mp.weixin.qq.com/s/c1，https://mp.weixin.qq.com/s/c2；https://mp.weixin.qq.com/s/c1");
+  assert.deepEqual(comma.valid, ["https://mp.weixin.qq.com/s/c1", "https://mp.weixin.qq.com/s/c2"]);
+  assert.deepEqual(splitWechatLinks("   ").valid, []);
+  assert.deepEqual(splitWechatLinks("   ").invalid, []);
 });

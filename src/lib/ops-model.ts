@@ -89,3 +89,22 @@ export function groupOpsItemsByDay(items: readonly OpsItem[], now: number = Date
   }
   return boards;
 }
+
+/** 批量登记（D6）的纯解析：按行/空白拆分、去重、空段忽略；非 http(s) 如实拒绝。 */
+export function splitWechatLinks(raw: string): { readonly valid: readonly string[]; readonly invalid: readonly string[] } {
+  const seen = new Set<string>();
+  const valid: string[] = [];
+  const invalid: string[] = [];
+  for (const piece of raw.split(/[\s,;，；]+/)) {
+    const url = piece.trim();
+    if (!url) continue;
+    if (!/^https?:\/\//i.test(url)) {
+      invalid.push(url);
+      continue;
+    }
+    if (seen.has(url)) continue;
+    seen.add(url);
+    valid.push(url);
+  }
+  return { valid, invalid };
+}

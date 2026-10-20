@@ -1,21 +1,26 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ExternalLink, Link2, LoaderCircle, RefreshCw } from "lucide-react";
+import { AlertTriangle, ExternalLink, Eye, Link2, LoaderCircle, RefreshCw, Send } from "lucide-react";
 import {
   OPS_REFRESH_ERRORS,
-  OpsClientError,
+  OPS_WECHAT_BATCH_MAX,
   fetchOpsCard,
   fetchOpsWechatLinks,
   opsErrorMessage,
-  registerOpsWechatLink,
+  previewOpsPush,
+  registerOpsWechatLinks,
+  sendOpsPush,
+  shouldDiscardPushPreview,
 } from "../../lib/ops-client";
+import type { WechatBatchEntry } from "../../lib/ops-client";
 import {
   OPS_SOURCE_BADGES,
   OPS_SOURCE_ORDER,
   groupOpsItemsByDay,
   opsStatusLabel,
   opsStatusTone,
+  splitWechatLinks,
 } from "../../lib/ops-model";
-import type { OpsCard, OpsItem, OpsWechatLink } from "../../lib/ops-types";
+import type { OpsCard, OpsItem, OpsPushPreview, OpsWechatLink } from "../../lib/ops-types";
 import { StatusBadge, ViewHeading } from "../shared";
 import { formatDateTime } from "../crm/crm-shared";
 import { useOps } from "./OpsProvider";
@@ -88,13 +93,100 @@ function BoardRow({ item }: { item: OpsItem }) {
   );
 }
 
+/** D2 推送逐次确认：dry-run 预览 → 二次点击确认才发送；确认状态不保存，换预览即作废。 */
+function PushPanel() {
+  const [preview, setPreview] = useState<OpsPushPreview | null>(null);
+  const [armed, setArmed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const loadPreview = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const next = await previewOpsPush();
+      setPreview(next);
+      setArmed(false);
+    } catch (caught) {
+      setError(opsErrorMessage(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const requestSend = async () => {
+    if (!preview || busy || preview.mode === "sent") return;
+    // 二次确认：第一次点击只进入待确认态，绝不发送；刷新页面即取消。
+    if (!armed) {
+      setArmed(true);
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const sent = await sendOpsPush(preview.previewId);
+      setPreview(sent);
+      setArmed(false);
+    } catch (caught) {
+      // 预览已作废（preview_stale / preview_consumed）：丢弃旧预览，提示重新生成，避免对旧内容反复确认。
+      if (shouldDiscardPushPreview(caught)) setPreview(null);
+      setError(opsErrorMessage(caught));
+      setArmed(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const sent = preview?.mode === "sent";
+  return (
+    <section className="panel" aria-label="钉钉日报推送">
+      <header className="panel__header">
+        <div><span className="eyebrow">DINGTALK PUSH</span><h2>日报推送（逐次确认）</h2></div>
+        <span>{sent ? "已发送" : preview ? `预览 ${preview.date} · ${preview.entryCount} 条` : "未生成预览"}</span>
+      </header>
+      <p className="crm-table-note">
+        先生成 dry-run 预览，二次点击确认才发送；确认状态不保存，重新生成预览或刷新页面即作废。
+        真发仅推送到 env 配置的本人单聊，且需要总开关 OPS_DINGTALK_PUSH_ENABLED；没有任何群发路径。
+      </p>
+      <div className="ops-push__actions">
+        <button className="primary-button" onClick={loadPreview} disabled={busy}>
+          {busy ? <LoaderCircle className="spin" size={14} /> : <Eye size={14} />}生成预览
+        </button>
+        {preview && (
+          <button
+            className={`primary-button ${armed ? "ops-push__confirm" : ""}`}
+            onClick={requestSend}
+            disabled={busy || sent}
+          >
+            {busy && armed ? <LoaderCircle className="spin" size={14} /> : <Send size={14} />}
+            {armed ? "再次点击确认发送" : "确认发送"}
+          </button>
+        )}
+      </div>
+      {error && <p className="ops-wechat__error">{error}</p>}
+      {preview && (
+        <div className="ops-push__preview">
+          <div className="ops-push__meta">
+            <StatusBadge tone={sent ? "green" : "blue"}>{sent ? "已发送" : "dry-run 预览"}</StatusBadge>
+            <small>previewId {preview.previewId}</small>
+          </div>
+          <small>{preview.note}</small>
+          <pre>{preview.cardText}</pre>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function OpsView() {
   const { digest, error } = useOps();
   const [card, setCard] = useState<OpsCard | null>(null);
   const [links, setLinks] = useState<readonly OpsWechatLink[]>([]);
-  const [wechatUrl, setWechatUrl] = useState("");
+  const [wechatInput, setWechatInput] = useState("");
   const [wechatBusy, setWechatBusy] = useState(false);
   const [wechatError, setWechatError] = useState("");
+  const [wechatInvalid, setWechatInvalid] = useState<readonly string[]>([]);
+  const [wechatResults, setWechatResults] = useState<readonly WechatBatchEntry[]>([]);
 
   const generatedAt = digest?.generatedAt ?? null;
   useEffect(() => {
@@ -114,18 +206,37 @@ export function OpsView() {
     [digest],
   );
 
-  const submitWechatLink = async (event: React.FormEvent) => {
+  const submitWechatLinks = async (event: React.FormEvent) => {
     event.preventDefault();
-    const url = wechatUrl.trim();
-    if (!url || wechatBusy) return;
+    if (wechatBusy) return;
+    // 批量解析：按行/空白拆分、去重、空段忽略；非 http(s) 只拒绝不中断。
+    const { valid, invalid } = splitWechatLinks(wechatInput);
+    setWechatInvalid(invalid);
+    setWechatResults([]);
+    if (valid.length === 0) {
+      setWechatError(invalid.length > 0 ? "没有可登记的链接。" : "请先粘贴至少一个链接。");
+      return;
+    }
     setWechatBusy(true);
     setWechatError("");
     try {
-      const link = await registerOpsWechatLink(url);
-      setLinks((current) => [...current.filter((existing) => existing.id !== link.id), link]);
-      setWechatUrl("");
+      // 超过单次上限时客户端整批拒绝（不发请求），这里如实提示分批。
+      const results = await registerOpsWechatLinks(valid);
+      setWechatResults(results);
+      const succeeded = results.flatMap((entry) => (entry.link ? [entry.link] : []));
+      if (succeeded.length > 0) {
+        setLinks((current) => [
+          ...succeeded,
+          ...current.filter((existing) => !succeeded.some((link) => link.id === existing.id)),
+        ]);
+      }
+      if (succeeded.length === valid.length) {
+        setWechatInput("");
+      } else if (succeeded.length === 0) {
+        setWechatError("全部登记失败，请稍后重试（失败原因见逐条列表）。");
+      }
     } catch (caught) {
-      setWechatError(caught instanceof OpsClientError ? opsErrorMessage(caught) : "登记未完成，请稍后重试。");
+      setWechatError(`${opsErrorMessage(caught)}（本次 ${valid.length} 条）`);
     } finally {
       setWechatBusy(false);
     }
@@ -193,6 +304,8 @@ export function OpsView() {
                 )}
             </section>
 
+            <PushPanel />
+
             <section className="panel" aria-label="近 7 天展板">
               <header className="panel__header">
                 <div><span className="eyebrow">LAST 7 DAYS</span><h2>近 7 天展板</h2></div>
@@ -214,20 +327,40 @@ export function OpsView() {
                 <div><span className="eyebrow">WECHAT REGISTRY</span><h2>公众号链接登记</h2></div>
                 <span>{links.length} 条</span>
               </header>
-              <form className="ops-wechat__form" onSubmit={submitWechatLink}>
+              <form className="ops-wechat__form" onSubmit={submitWechatLinks}>
                 <Link2 size={14} />
-                <input
-                  value={wechatUrl}
-                  onChange={(event) => setWechatUrl(event.target.value)}
-                  placeholder="粘贴公众号文章链接（https://mp.weixin.qq.com/…）"
-                  aria-label="公众号文章链接"
+                <textarea
+                  value={wechatInput}
+                  onChange={(event) => setWechatInput(event.target.value)}
+                  placeholder={`每行一个公众号文章链接（https://mp.weixin.qq.com/…），可一次粘贴多个（单次最多 ${OPS_WECHAT_BATCH_MAX} 条）；空行忽略，自动去重`}
+                  aria-label="公众号文章链接（可多个，每行一个）"
+                  rows={3}
                 />
-                <button className="primary-button" type="submit" disabled={wechatBusy || !wechatUrl.trim()}>
-                  {wechatBusy ? <LoaderCircle className="spin" size={14} /> : null}登记
+                <button className="primary-button" type="submit" disabled={wechatBusy || !wechatInput.trim()}>
+                  {wechatBusy ? <LoaderCircle className="spin" size={14} /> : null}批量登记
                 </button>
               </form>
+              {wechatInvalid.length > 0 && (
+                <p className="ops-wechat__error">已忽略 {wechatInvalid.length} 个非 http(s) 输入：{wechatInvalid.join("、")}</p>
+              )}
               {wechatError && <p className="ops-wechat__error">{wechatError}</p>}
-              <p className="crm-table-note">公众号文章无公开自动抓取通道，v1 仅登记链接供人工查看；白名单域名会尝试抓取并如实标注成败。</p>
+              <p className="crm-table-note">公众号文章无公开自动抓取通道，v1 仅登记链接供人工查看；白名单域名会尝试抓取并如实标注成败。批量登记逐条独立执行，单条失败不影响其他条。</p>
+              {wechatResults.length > 0 && (
+                <ul className="ops-list ops-list--padded">
+                  {wechatResults.map((entry) => (
+                    <li key={entry.url} className="ops-entry">
+                      <div>
+                        {entry.link
+                          ? <a href={entry.link.url} target="_blank" rel="noopener noreferrer">{entry.link.title ?? entry.link.url}<ExternalLink size={11} /></a>
+                          : <strong>{entry.url}</strong>}
+                        <span>{entry.error ?? entry.link?.note}</span>
+                      </div>
+                      <time>{entry.link ? formatDateTime(entry.link.registeredAt) : "—"}</time>
+                      <StatusBadge tone={entry.link ? "green" : "amber"}>{entry.link ? "已登记" : "失败"}</StatusBadge>
+                    </li>
+                  ))}
+                </ul>
+              )}
               {links.length > 0 && (
                 <ul className="ops-list ops-list--padded">
                   {links.map((link) => (

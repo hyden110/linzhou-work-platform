@@ -72,3 +72,16 @@ export interface OpsWechatLink {
   readonly note: string;
   readonly title: string | null;
 }
+
+/** 钉钉推送预览（dry-run 产物或发送回执）。发送必须逐次 confirm，确认状态不落前端。 */
+export interface OpsPushPreview {
+  readonly mode: "dry_run" | "sent";
+  readonly generatedAt: string;
+  readonly date: string;
+  readonly cardTitle: string;
+  readonly cardText: string;
+  readonly entryCount: number;
+  readonly receiverConfigured: boolean;
+  readonly previewId: string;
+  readonly note: string;
+}
