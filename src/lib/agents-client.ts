@@ -5,6 +5,7 @@
  * 桥 500/离线 → unavailable + 「本地桥未启动」文案。无自动轮询，全部显式拉取。
  */
 
+import { composeErrorMessage } from "./error-message.ts";
 import { clockCn } from "./report-client.ts";
 
 export { clockCn };
@@ -282,6 +283,5 @@ export function agentsErrorMessage(error: unknown): string {
   };
   const code = error instanceof AgentsClientError ? error.code : "unavailable";
   const base = messages[code] ?? "本地桥未启动，请确认已在本机运行 npm run dev:function 后重试。";
-  const detail = error instanceof AgentsClientError && error.detail ? ` ${error.detail}` : "";
-  return `${base}${detail}`;
+  return composeErrorMessage(base, error instanceof AgentsClientError ? error.detail : "");
 }

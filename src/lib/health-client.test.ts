@@ -3,8 +3,10 @@ import test from "node:test";
 
 import {
   HealthClientError,
+  checkHealthGroup,
   fetchHealthSnapshot,
   healthErrorMessage,
+  renewHealth,
   type HealthSnapshot,
 } from "./health-client.ts";
 
@@ -120,6 +122,92 @@ test("unknown row states are rejected so the panel never renders fabricated stat
   });
   await assert.rejects(
     () => fetchHealthSnapshot(badState),
+    (error: unknown) => error instanceof HealthClientError && error.code === "invalid_response",
+  );
+});
+
+/* ---------------- 现场重检（check）与登录态续期（renew） ---------------- */
+
+function checkPayload(): Record<string, unknown> {
+  const base = snapshotPayload().data as Record<string, unknown>;
+  return {
+    ok: true,
+    data: {
+      ...base,
+      groupCheckedAt: { bridges: "2026-10-20T02:00:00.000Z", cli: "2026-10-20T03:00:00.000Z", caps: "2026-10-20T02:00:00.000Z" },
+    },
+  };
+}
+
+test("checkHealthGroup POSTs {group} and projects snapshot + per-group timestamps", async () => {
+  let captured: Request | undefined;
+  const fetchImpl: typeof fetch = async (input, init) => {
+    captured = new Request(input, init);
+    return Response.json(checkPayload());
+  };
+  const view = await checkHealthGroup("cli", fetchImpl);
+  assert.equal(captured?.method, "POST");
+  assert.equal(captured?.url, "http://localhost/local/health/check");
+  assert.deepEqual(JSON.parse(await (captured?.text() ?? "{}")) as unknown, { group: "cli" });
+  assert.equal(view.groupCheckedAt.cli, "2026-10-20T03:00:00.000Z");
+  assert.equal(view.groupCheckedAt.bridges, "2026-10-20T02:00:00.000Z");
+  assert.equal(view.cli.length, 2);
+
+  // 缺 groupCheckedAt → invalid_response（不产出半真半假的组时间戳）。
+  const missing: typeof fetch = async () => Response.json(snapshotPayload());
+  await assert.rejects(
+    () => checkHealthGroup("cli", missing),
+    (error: unknown) => error instanceof HealthClientError && error.code === "invalid_response",
+  );
+
+  const busy: typeof fetch = async () => Response.json(
+    { ok: false, error: { code: "health_busy", message: "已有一轮现场重检正在进行中" } },
+    { status: 409 },
+  );
+  await assert.rejects(
+    () => checkHealthGroup("cli", busy),
+    (error: unknown) => error instanceof HealthClientError && error.code === "health_busy",
+  );
+  assert.match(healthErrorMessage(new HealthClientError("health_busy")), /正在进行/);
+});
+
+test("renewHealth POSTs {keys?}, projects rows and drops identity values", async () => {
+  let captured: Request | undefined;
+  const fetchImpl: typeof fetch = async (input, init) => {
+    captured = new Request(input, init);
+    return Response.json({
+      ok: true,
+      data: {
+        renewedAt: "2026-10-20T03:00:00.000Z",
+        results: [
+          { key: "dws", state: "ok", expiresAt: "2026-11-20T00:00:00.000Z", note: "钉钉授权有效", account: "hostile-identity" },
+          { key: "a1", state: "expired", expiresAt: "", note: "登录态无效" },
+        ],
+      },
+    });
+  };
+  const all = await renewHealth(undefined, fetchImpl);
+  assert.equal(captured?.url, "http://localhost/local/health/renew");
+  assert.deepEqual(JSON.parse(await (captured?.text() ?? "{}")) as unknown, {});
+  assert.equal(all.renewedAt, "2026-10-20T03:00:00.000Z");
+  assert.equal(all.results.length, 2);
+  assert.equal(all.results[0]?.expiresAt, "2026-11-20T00:00:00.000Z");
+  assert.equal(all.results[1]?.state, "expired");
+  assert.ok(!JSON.stringify(all).includes("hostile-identity"), "白名单投影必须丢弃身份值字段");
+
+  const subsetFetch: typeof fetch = async (input, init) => {
+    captured = new Request(input, init);
+    return Response.json({ ok: true, data: { renewedAt: "", results: [] } });
+  };
+  await renewHealth(["dws"], subsetFetch);
+  assert.deepEqual(JSON.parse(await (captured?.text() ?? "{}")) as unknown, { keys: ["dws"] });
+
+  const badState: typeof fetch = async () => Response.json({
+    ok: true,
+    data: { renewedAt: "", results: [{ key: "dws", state: "fabulous" }] },
+  });
+  await assert.rejects(
+    () => renewHealth(undefined, badState),
     (error: unknown) => error instanceof HealthClientError && error.code === "invalid_response",
   );
 });

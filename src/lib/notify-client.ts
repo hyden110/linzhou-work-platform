@@ -5,6 +5,8 @@
  * kind 中文标签以静态库 scripts/lib/notify/index.js KIND_T 为准（含 reply=待回复）。
  */
 
+import { composeErrorMessage } from "./error-message.ts";
+
 const NOTIFY_TIMEOUT_MS = 15_000;
 
 const SAFE_ERRORS = [
@@ -217,6 +219,5 @@ export function notifyErrorMessage(error: unknown): string {
   };
   const code = error instanceof NotifyClientError ? error.code : "unavailable";
   const base = messages[code] ?? "本地桥未启动，请确认已在本机运行 npm run dev:function 后重试。";
-  const detail = error instanceof NotifyClientError && error.detail ? ` ${error.detail}` : "";
-  return `${base}${detail}`;
+  return composeErrorMessage(base, error instanceof NotifyClientError ? error.detail : "");
 }

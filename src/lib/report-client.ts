@@ -5,6 +5,8 @@
  * 桥 500/离线 → unavailable + 「本地桥未启动」文案。无自动轮询，全部显式拉取。
  */
 
+import { composeErrorMessage } from "./error-message.ts";
+
 const REPORT_TIMEOUT_MS = 120_000; /* 桥侧 dws/SSH 上限 90s + 网络余量 */
 
 const SAFE_ERRORS = [
@@ -316,8 +318,7 @@ export function reportErrorMessage(error: unknown): string {
   };
   const code = error instanceof ReportClientError ? error.code : "unavailable";
   const base = messages[code] ?? "本地桥未启动，请确认已在本机运行 npm run dev:function 后重试。";
-  const detail = error instanceof ReportClientError && error.detail ? ` ${error.detail}` : "";
-  return `${base}${detail}`;
+  return composeErrorMessage(base, error instanceof ReportClientError ? error.detail : "");
 }
 
 /**

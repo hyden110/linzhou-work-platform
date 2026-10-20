@@ -3,6 +3,7 @@ export type ViewId =
   | "customers"
   | "dingtalk"
   | "lifecycle"
+  | "okr"
   | "leads"
   | "overview"
   | "ask"
@@ -17,6 +18,7 @@ export type ViewId =
   | "agents"
   | "ontology"
   | "profile"
+  | "datasources"
   | "settings";
 
 export interface CountRow {

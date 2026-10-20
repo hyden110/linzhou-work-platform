@@ -19,6 +19,7 @@ import {
   Settings,
   Shapes,
   Sparkles,
+  Target,
   UserRound,
   Users,
   Workflow,
@@ -46,6 +47,7 @@ const navigation: NavigationGroup[] = [
       { id: "customers", label: "客户盘面", icon: Users },
       { id: "dingtalk", label: "钉群盘面", icon: MessagesSquare },
       { id: "lifecycle", label: "PPL 跟进", icon: Workflow },
+      { id: "okr", label: "OKR 目标", icon: Target },
       { id: "leads", label: "拓新雷达", icon: Radar },
       { id: "report", label: "日周报", icon: CalendarDays },
       { id: "inbox", label: "消息中心", icon: Inbox },
@@ -75,6 +77,7 @@ const navigation: NavigationGroup[] = [
     items: [
       { id: "agents", label: "数字员工", icon: Cpu },
       { id: "profile", label: "个人中心", icon: UserRound },
+      { id: "datasources", label: "数据源管理", icon: Database },
       { id: "settings", label: "设置", icon: Settings },
     ],
   },

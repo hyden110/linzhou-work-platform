@@ -31,6 +31,10 @@ import { createAgentsBridge, AgentsBridgeError, type AgentsBridge } from "./agen
 import { createProfileBridge, type ProfileBridge } from "./profile-bridge.ts";
 import { createOntologyBridge, type OntologyBridge } from "./ontology-bridge.ts";
 import { createBus, createProducers, handleEvents, LIVE_EVENTS_PATH, type Bus, type Producers } from "./live-bridge.ts";
+import { createOkrBridge } from "./okr-bridge.ts";
+import { createReplyBridge } from "./reply-bridge.ts";
+import { createDataSourceBridge } from "./datasource-bridge.ts";
+import { createGuidesBridge } from "./guides-bridge.ts";
 
 /**
  * Router for the local-only endpoints that back the workbench's "open on this Mac",
@@ -145,6 +149,10 @@ export interface LocalRouterDependencies {
   readonly ontologyBridge?: OntologyBridge;
   readonly liveBus?: Bus;
   readonly liveProducers?: Producers;
+  readonly okrBridge?: ReturnType<typeof createOkrBridge>;
+  readonly replyBridge?: ReturnType<typeof createReplyBridge>;
+  readonly datasourceBridge?: ReturnType<typeof createDataSourceBridge>;
+  readonly guidesBridge?: ReturnType<typeof createGuidesBridge>;
 }
 
 /** 稳定错误码 → HTTP 状态映射（report）：unconfigured=400（含参数/白名单拒绝），其余 502。 */
@@ -215,6 +223,10 @@ export function createLocalRouter(dependencies: LocalRouterDependencies) {
   const liveProducers = dependencies.liveProducers
     ?? createProducers({ cacheDir: join(PROJECT_ROOT, ".local-cache"), bus: liveBus });
   liveProducers.start();
+  const okrBridge = dependencies.okrBridge ?? createOkrBridge();
+  const replyBridge = dependencies.replyBridge ?? createReplyBridge();
+  const datasourceBridge = dependencies.datasourceBridge ?? createDataSourceBridge();
+  const guidesBridge = dependencies.guidesBridge ?? createGuidesBridge();
   const allowedOrigins = new Set(dependencies.allowedOrigins ?? DEFAULT_ALLOWED_ORIGINS);
   const allowedHosts = new Set([
     `127.0.0.1:${dependencies.port}`,
@@ -770,6 +782,21 @@ export function createLocalRouter(dependencies: LocalRouterDependencies) {
     if (route === "/local/profile/session" && request.method === "DELETE") return profileBridge.deleteSession(request);
     if (route === "/local/profile/test" && request.method === "POST") return profileBridge.testSession(request);
     if (route === "/local/profile/prefs" && request.method === "PUT") return profileBridge.putPrefs(request);
+
+    // OKR（CRD）完整读写：sync-dry 出逐项差异 → sync-confirm 仅落勾选键（冲突需 acceptConflicts）。
+    if (route === "/local/okr" && request.method === "GET") return okrBridge.view(request);
+    if (route === "/local/okr/refresh" && request.method === "POST") return okrBridge.refresh(request);
+    if (route === "/local/okr/edits" && request.method === "GET") return okrBridge.edits(request);
+    if (route === "/local/okr/sync-dry" && request.method === "POST") return okrBridge.syncDry(request);
+    if (route === "/local/okr/sync-confirm" && request.method === "POST") return okrBridge.syncConfirm(request);
+
+    // 子路由委托：健康重检/续期、消息回复、数据源、接入向导四桥自带 handle()，
+    // 各自按错误码回 400/409/405/502，非本桥路径返回 undefined 交回主路由。
+    const delegated = await healthBridge.handle(request)
+      ?? await replyBridge.handle(request)
+      ?? await datasourceBridge.handle(request)
+      ?? await guidesBridge.handle(request);
+    if (delegated) return delegated;
 
     return jsonResponse({ ok: false, error: "method_not_allowed" }, 405, { Allow: "GET, POST, DELETE" });
   };

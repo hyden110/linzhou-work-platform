@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { createHealthBridge, type HealthBridge, type HealthSnapshot } from "./health-bridge.ts";
+import { HEALTH_ROUTES, HealthBridgeError, createHealthBridge, type HealthBridge, type HealthSnapshot } from "./health-bridge.ts";
 import { createLocalRouter } from "./local-router.ts";
 import type { HealthCommandRunner } from "./health/health-cli.ts";
 
@@ -436,5 +436,261 @@ test("router serves GET /local/health read-only and maps bridge failure to 502",
     const failed = await failingRouter(get("/local/health"));
     assert.equal(failed.status, 502);
     assert.equal(((await failed.json()) as { error: string }).error, "health_unavailable");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 现场重检（POST /local/health/check）与登录态续期检测（POST /local/health/renew）
+// 合成数据约定同上：runner 全量注入，凭据样文本全部为敌意合成构造。
+// ---------------------------------------------------------------------------
+
+function createClockBridge(options: HealthOptions & { clock?: { t: number } } = {}) {
+  const clock = options.clock ?? { t: Date.parse("2026-10-20T02:00:00.000Z") };
+  const fakes = healthyBridgeFakes(options.bridges);
+  const bridge = createHealthBridge({
+    now: () => clock.t,
+    env: options.env ?? {},
+    run: options.run ?? okRunner,
+    cacheDir: options.cacheDir,
+    casesConfigPath: options.casesConfigPath,
+    crmSnapshot: fakes.crmSnapshot,
+    dingtalkWrites: fakes.dingtalkWrites,
+    fbiMetrics: fakes.fbiMetrics,
+    pplInspection: fakes.pplInspection,
+    kbConfig: fakes.kbConfig as never,
+    opsDigest: fakes.opsDigest,
+  });
+  return { bridge, clock };
+}
+
+const renewRunner = fakeRunner((file, args) => {
+  if (file === "a1" && args[0] === "auth") {
+    return { stdout: JSON.stringify({ account: "synthetic-account", nickname: "合成花名", source: "ncs" }) };
+  }
+  if (file === "dws" && args[0] === "auth") {
+    return { stdout: JSON.stringify({ authenticated: true, corp_name: "SyntheticCorp", user_name: "synthetic-user", refresh_expires_at: "2026-11-20T00:00:00Z" }) };
+  }
+  if (file === "aliyun" && args[0] === "sts") {
+    return { stdout: JSON.stringify({ Arn: "acs:ram::123456:role/synthetic-role", IdentityType: "AssumedRoleUser" }) };
+  }
+  if (file === "ossutil" && args[0] === "ls") {
+    return { stdout: "Bucket Number is: 3\nelapsed: 0.5s\n" };
+  }
+  if (file === "qodercli") return { stdout: "qodercli 1.9.9 (synthetic)\n" };
+  return { stdout: "" };
+});
+
+test("check: first run without persisted snapshot runs all groups and persists group timestamps", async () => {
+  await withTempDir(async (dir) => {
+    const { bridge } = createClockBridge({ cacheDir: dir, casesConfigPath: join(dir, "absent-cases.json") });
+    const result = await bridge.check({ group: "cli" });
+    assert.equal(result.cli.length, 5);
+    assert.equal(result.bridges.length, 8);
+    assert.ok(result.caps.length >= 3);
+    assert.equal(result.groupCheckedAt.bridges, "2026-10-20T02:00:00.000Z");
+    assert.equal(result.groupCheckedAt.cli, "2026-10-20T02:00:00.000Z");
+    assert.equal(result.groupCheckedAt.caps, "2026-10-20T02:00:00.000Z");
+    const persisted = JSON.parse(await readFile(join(dir, "health.json"), "utf-8")) as { groupCheckedAt: Record<string, string> };
+    assert.equal(persisted.groupCheckedAt.cli, "2026-10-20T02:00:00.000Z");
+  });
+});
+
+test("check: re-running one group reuses the other groups from the persisted snapshot", async () => {
+  await withTempDir(async (dir) => {
+    const clock = { t: Date.parse("2026-10-20T02:00:00.000Z") };
+    const first = createClockBridge({ cacheDir: dir, clock, casesConfigPath: join(dir, "absent-cases.json"), run: okRunner });
+    await first.bridge.check({ group: "bridges" });
+
+    // 换 runner + 推进时钟：只重检 cli，其余组沿用上轮
+    clock.t = Date.parse("2026-10-20T03:00:00.000Z");
+    const second = createClockBridge({ cacheDir: dir, clock, casesConfigPath: join(dir, "absent-cases.json"), run: missingRunner });
+    const result = await second.bridge.check({ group: "cli" });
+    assert.equal(rowOf(result, "cli", "a1").state, "missing", "cli 组应来自新 runner");
+    assert.equal(result.groupCheckedAt.cli, "2026-10-20T03:00:00.000Z");
+    assert.equal(result.groupCheckedAt.bridges, "2026-10-20T02:00:00.000Z", "bridges 组沿用上轮时间戳");
+    assert.equal(result.groupCheckedAt.caps, "2026-10-20T02:00:00.000Z");
+    assert.equal(result.bridges.length, 8, "bridges 行沿用上轮快照");
+  });
+});
+
+test("check: bridges group rerun keeps cli rows from previous round", async () => {
+  await withTempDir(async (dir) => {
+    const clock = { t: Date.parse("2026-10-20T02:00:00.000Z") };
+    const first = createClockBridge({ cacheDir: dir, clock, casesConfigPath: join(dir, "absent-cases.json"), run: missingRunner });
+    await first.bridge.check({ group: "cli" });
+    clock.t = Date.parse("2026-10-20T04:00:00.000Z");
+    const second = createClockBridge({ cacheDir: dir, clock, casesConfigPath: join(dir, "absent-cases.json"), run: okRunner });
+    const result = await second.bridge.check({ group: "bridges" });
+    assert.equal(rowOf(result, "cli", "a1").state, "missing", "cli 行必须沿用上一轮，不得被顺带重跑");
+    assert.equal(result.groupCheckedAt.bridges, "2026-10-20T04:00:00.000Z");
+    assert.equal(result.groupCheckedAt.cli, "2026-10-20T02:00:00.000Z");
+  });
+});
+
+test("check: invalid group rejected; concurrent checks are single-flight", async () => {
+  await withTempDir(async (dir) => {
+    const { bridge } = createClockBridge({ cacheDir: dir, casesConfigPath: join(dir, "absent-cases.json") });
+    await assert.rejects(
+      () => bridge.check({ group: "nope" }),
+      (error: unknown) => error instanceof HealthBridgeError && error.code === "health_invalid_group",
+    );
+    await assert.rejects(
+      () => bridge.check({}),
+      (error: unknown) => error instanceof HealthBridgeError && error.code === "health_invalid_request",
+    );
+  });
+});
+
+test("check: corrupt persisted snapshot falls back to a full fresh run", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(join(dir, "health.json"), "{corrupt", "utf-8");
+    const { bridge } = createClockBridge({ cacheDir: dir, casesConfigPath: join(dir, "absent-cases.json") });
+    const result = await bridge.check({ group: "cli" });
+    assert.equal(result.cli.length, 5);
+    assert.equal(result.bridges.length, 8);
+    const persisted = JSON.parse(await readFile(join(dir, "health.json"), "utf-8")) as { cli: unknown[] };
+    assert.equal(persisted.cli.length, 5);
+  });
+});
+
+test("check: hostile CLI output never reaches the persisted snapshot", async () => {
+  await withTempDir(async (dir) => {
+    const { bridge } = createClockBridge({ cacheDir: dir, casesConfigPath: join(dir, "absent-cases.json"), run: hostileRunner });
+    await bridge.check({ group: "cli" });
+    const text = await readFile(join(dir, "health.json"), "utf-8");
+    assert.ok(!text.includes("LTAI5tSyntheticSyntheticValue01"));
+    assert.ok(!text.includes("8f14e45fceea167a5a36dedd4bea2543"));
+    assert.ok(!text.includes("sk-synthetic0123456789abcdef"));
+    assert.ok(!text.includes("hunter2-master-key-2026"));
+  });
+});
+
+test("renew: reruns login-state subcommands for all five CLIs without echoing identity values", async () => {
+  await withTempDir(async (dir) => {
+    const { bridge } = createClockBridge({ cacheDir: dir, casesConfigPath: join(dir, "absent-cases.json"), run: renewRunner });
+    const result = await bridge.renew({});
+    assert.equal(result.renewedAt, "2026-10-20T02:00:00.000Z");
+    assert.equal(result.results.length, 5);
+    const byKey = new Map(result.results.map((r) => [r.key, r]));
+    assert.equal(byKey.get("a1")?.state, "ok");
+    assert.equal(byKey.get("dws")?.state, "ok");
+    assert.equal(byKey.get("dws")?.expiresAt, "2026-11-20T00:00:00.000Z");
+    assert.equal(byKey.get("aliyun")?.state, "ok");
+    assert.equal(byKey.get("ossutil")?.state, "ok");
+    assert.ok(byKey.get("ossutil")?.note.includes("3"));
+    assert.equal(byKey.get("qodercli")?.state, "ok");
+    const serialized = JSON.stringify(result);
+    assert.ok(!serialized.includes("synthetic-account"), "身份值绝不回显");
+    assert.ok(!serialized.includes("SyntheticCorp"));
+    assert.ok(!serialized.includes("synthetic-user"));
+    assert.ok(!serialized.includes("acs:ram::123456"));
+  });
+});
+
+test("renew: keys subset only runs requested CLIs; unknown key rejected", async () => {
+  await withTempDir(async (dir) => {
+    const calls: string[] = [];
+    const trackingRunner: HealthCommandRunner = async (file, args) => {
+      calls.push(file);
+      return renewRunner(file, args, { timeoutMs: 1000 });
+    };
+    const { bridge } = createClockBridge({ cacheDir: dir, casesConfigPath: join(dir, "absent-cases.json"), run: trackingRunner });
+    const result = await bridge.renew({ keys: ["dws"] });
+    assert.deepEqual(calls, ["dws"]);
+    assert.equal(result.results.length, 1);
+    assert.equal(result.results[0]?.key, "dws");
+    await assert.rejects(
+      () => bridge.renew({ keys: ["nope"] }),
+      (error: unknown) => error instanceof HealthBridgeError && error.code === "health_invalid_request",
+    );
+  });
+});
+
+test("renew: expired session, missing CLI and timeout degrade per key", async () => {
+  await withTempDir(async (dir) => {
+    const runner = fakeRunner((file, args) => {
+      if (file === "dws") return { stdout: JSON.stringify({ authenticated: false }) };
+      if (file === "a1") return { code: "ENOENT" };
+      if (file === "aliyun") return { code: null };
+      if (file === "ossutil") return { code: 1, stdout: "", stderr: "ossutil: config not found" };
+      return { stdout: "qodercli 1.9.9\n" };
+    });
+    const { bridge } = createClockBridge({ cacheDir: dir, casesConfigPath: join(dir, "absent-cases.json"), run: runner });
+    const result = await bridge.renew({});
+    const byKey = new Map(result.results.map((r) => [r.key, r]));
+    assert.equal(byKey.get("dws")?.state, "expired");
+    assert.ok(byKey.get("dws")?.note.includes("dws auth login"));
+    assert.equal(byKey.get("a1")?.state, "missing");
+    assert.equal(byKey.get("aliyun")?.state, "error");
+    assert.equal(byKey.get("ossutil")?.state, "error");
+    assert.equal(byKey.get("qodercli")?.state, "ok");
+  });
+});
+
+test("renew: hostile output redacted; results never written into health.json", async () => {
+  await withTempDir(async (dir) => {
+    const runner = fakeRunner((file) => ({
+      code: 1,
+      stdout: "",
+      stderr: "fatal: Set-Cookie: SESSION=8f14e45fceea167a5a36dedd4bea2543; login_token=AbCdEf0123456789AbCdEf0123456789",
+    }));
+    const { bridge } = createClockBridge({ cacheDir: dir, casesConfigPath: join(dir, "absent-cases.json"), run: runner });
+    const result = await bridge.renew({ keys: ["dws"] });
+    const serialized = JSON.stringify(result);
+    assert.ok(!serialized.includes("8f14e45fceea167a5a36dedd4bea2543"));
+    assert.ok(!serialized.includes("AbCdEf0123456789"));
+    await assert.rejects(() => readFile(join(dir, "health.json"), "utf-8"), "renew 不写快照文件");
+  });
+});
+
+test("handle: POST /local/health/check and /local/health/renew; 405 on GET; unrelated → undefined", async () => {
+  await withTempDir(async (dir) => {
+    const { bridge } = createClockBridge({ cacheDir: dir, casesConfigPath: join(dir, "absent-cases.json"), run: renewRunner });
+    const post = (path: string, body: unknown) => new Request(`http://127.0.0.1:8000${path}`, {
+      method: "POST",
+      headers: { ...TRUSTED, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const checked = await bridge.handle(post("/local/health/check", { group: "cli" }));
+    assert.ok(checked);
+    assert.equal(checked.status, 200);
+    assert.equal(checked.headers.get("cache-control"), "no-store");
+    const checkPayload = await checked.json() as { ok: boolean; data: { groupCheckedAt: Record<string, string> } };
+    assert.equal(checkPayload.ok, true);
+    assert.ok(checkPayload.data.groupCheckedAt.cli);
+
+    const renewed = await bridge.handle(post("/local/health/renew", { keys: ["dws"] }));
+    assert.ok(renewed);
+    assert.equal(renewed.status, 200);
+
+    const badGroup = await bridge.handle(post("/local/health/check", { group: "nope" }));
+    assert.ok(badGroup);
+    assert.equal(badGroup.status, 400);
+
+    const wrongMethod = await bridge.handle(get("/local/health/check"));
+    assert.ok(wrongMethod);
+    assert.equal(wrongMethod.status, 405);
+
+    assert.equal(await bridge.handle(get("/local/health")), undefined, "GET /local/health 保持 local-router 既有接线");
+    assert.deepEqual(HEALTH_ROUTES.map((r) => `${r.method} ${r.path}`), ["POST /local/health/check", "POST /local/health/renew"]);
+  });
+});
+
+test("check: concurrent group checks are single-flight (health_busy)", async () => {
+  await withTempDir(async (dir) => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const slowRunner: HealthCommandRunner = async (file, args) => {
+      await gate;
+      return okRunner(file, args, { timeoutMs: 1000 });
+    };
+    const { bridge } = createClockBridge({ cacheDir: dir, casesConfigPath: join(dir, "absent-cases.json"), run: slowRunner });
+    const first = bridge.check({ group: "cli" });
+    await assert.rejects(
+      () => bridge.check({ group: "caps" }),
+      (error: unknown) => error instanceof HealthBridgeError && error.code === "health_busy",
+    );
+    release();
+    await first;
   });
 });

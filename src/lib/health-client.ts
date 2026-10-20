@@ -18,6 +18,9 @@ const SAFE_ERRORS = [
   "host_not_allowed",
   "method_not_allowed",
   "health_unavailable",
+  "health_invalid_request",
+  "health_invalid_group",
+  "health_busy",
 ] as const;
 
 export type HealthClientErrorCode = (typeof SAFE_ERRORS)[number];
@@ -145,14 +148,108 @@ export async function fetchHealthSnapshot(fetchImpl: typeof fetch = fetch): Prom
   }
   const payload: unknown = await response.json().catch(() => undefined);
   if (!response.ok || !isRecord(payload) || payload.ok !== true) {
-    if (isRecord(payload) && typeof payload.error === "string" && SAFE_ERROR_SET.has(payload.error)) {
-      throw new HealthClientError(payload.error as HealthClientErrorCode);
-    }
-    throw new HealthClientError("unavailable");
+    throw new HealthClientError(safeErrorCode(payload));
   }
   const snapshot = asSnapshot(payload.data);
   if (!snapshot) throw new HealthClientError("invalid_response");
   return snapshot;
+}
+
+/** 错误信封兼容两种形状：{error:"code"}（GET 既有接线）与 {error:{code}}（check/renew 子路由）。 */
+function safeErrorCode(payload: unknown): HealthClientErrorCode {
+  if (isRecord(payload)) {
+    const error = payload.error;
+    const code = typeof error === "string" ? error : isRecord(error) && typeof error.code === "string" ? error.code : "";
+    if (SAFE_ERROR_SET.has(code)) return code as HealthClientErrorCode;
+  }
+  return "unavailable";
+}
+
+/* ---------------- 现场重检（POST /local/health/check）与续期（POST /local/health/renew） ---------------- */
+
+export type HealthGroupName = "bridges" | "cli" | "caps";
+
+export interface HealthCheckSnapshot extends HealthSnapshot {
+  /** 各组最近一次现场重检时间（ISO）；沿用上轮的组保持原时间戳。 */
+  readonly groupCheckedAt: Readonly<Record<HealthGroupName, string>>;
+}
+
+export interface HealthRenewRow {
+  readonly key: string;
+  readonly state: "ok" | "expired" | "missing" | "error";
+  readonly expiresAt: string;
+  readonly note: string;
+}
+
+export interface HealthRenewResult {
+  readonly renewedAt: string;
+  readonly results: readonly HealthRenewRow[];
+}
+
+const RENEW_ROW_STATES = new Set(["ok", "expired", "missing", "error"]);
+
+function postUrl(path: string): URL {
+  const origin = typeof window === "undefined" ? "http://localhost" : window.location.origin;
+  return new URL(path, origin);
+}
+
+async function postLocal(path: string, body: unknown, fetchImpl: typeof fetch): Promise<unknown> {
+  let response: Response;
+  try {
+    response = await fetchImpl(postUrl(path), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
+    });
+  } catch {
+    throw new HealthClientError("unavailable");
+  }
+  const payload: unknown = await response.json().catch(() => undefined);
+  if (!response.ok || !isRecord(payload) || payload.ok !== true) {
+    throw new HealthClientError(safeErrorCode(payload));
+  }
+  return payload.data;
+}
+
+function asCheckedAt(value: unknown): Readonly<Record<HealthGroupName, string>> | undefined {
+  if (!isRecord(value)) return undefined;
+  const out = {} as Record<HealthGroupName, string>;
+  for (const group of ["bridges", "cli", "caps"] as const) {
+    if (typeof value[group] !== "string") return undefined;
+    out[group] = value[group];
+  }
+  return out;
+}
+
+/** POST /local/health/check —— 只重跑该组，其余组沿用上轮持久化快照。 */
+export async function checkHealthGroup(group: HealthGroupName, fetchImpl: typeof fetch = fetch): Promise<HealthCheckSnapshot> {
+  const data = await postLocal("/local/health/check", { group }, fetchImpl);
+  const snapshot = asSnapshot(data);
+  const groupCheckedAt = isRecord(data) ? asCheckedAt(data.groupCheckedAt) : undefined;
+  if (!snapshot || !groupCheckedAt) throw new HealthClientError("invalid_response");
+  return { ...snapshot, groupCheckedAt };
+}
+
+/** POST /local/health/renew —— 重跑 CLI 登录态子命令；凭据/身份值绝不入结果。 */
+export async function renewHealth(keys?: readonly string[], fetchImpl: typeof fetch = fetch): Promise<HealthRenewResult> {
+  const data = await postLocal("/local/health/renew", keys === undefined ? {} : { keys: [...keys] }, fetchImpl);
+  if (!isRecord(data) || typeof data.renewedAt !== "string" || !Array.isArray(data.results)) {
+    throw new HealthClientError("invalid_response");
+  }
+  const results: HealthRenewRow[] = [];
+  for (const item of data.results) {
+    if (!isRecord(item) || typeof item.key !== "string" || typeof item.state !== "string" || !RENEW_ROW_STATES.has(item.state)) {
+      throw new HealthClientError("invalid_response");
+    }
+    results.push({
+      key: item.key,
+      state: item.state as HealthRenewRow["state"],
+      expiresAt: typeof item.expiresAt === "string" ? item.expiresAt : "",
+      note: typeof item.note === "string" ? item.note : "",
+    });
+  }
+  return { renewedAt: data.renewedAt, results };
 }
 
 export function healthErrorMessage(error: unknown): string {
@@ -165,6 +262,9 @@ export function healthErrorMessage(error: unknown): string {
     host_not_allowed: "本机服务拒绝了该请求来源。",
     method_not_allowed: "请求方式不被本机服务接受。",
     health_unavailable: "环境体检暂时不可用，请稍后重试；单项缺口会在恢复后如实显示。",
+    health_invalid_request: "体检请求参数不完整，请重试。",
+    health_invalid_group: "未知的体检组，请刷新页面后重试。",
+    health_busy: "已有一轮现场重检正在进行中，请等待其完成。",
   };
   return messages[code] ?? "本地桥未启动，请确认已在本机运行 npm run dev:function 后重试。";
 }

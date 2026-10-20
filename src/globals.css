@@ -873,10 +873,12 @@ select { padding: 6px 28px 6px 9px; }
 .health-section__head h3 { margin: 0; color: var(--text); font-size: 12px; font-weight: 600; }
 .health-section__head span { color: var(--text-dim); font-size: 10px; }
 .health-section__rows { display: grid; overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); }
-.health-row { display: grid; grid-template-columns: minmax(120px, 200px) auto minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 8px 14px; border-bottom: 1px solid var(--line); }
+.health-row { display: grid; grid-template-columns: minmax(0, 200px) auto minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 8px 14px; border-bottom: 1px solid var(--line); }
 .health-row:last-child { border-bottom: 0; }
 .health-row[data-state="amber"] { background: rgba(240, 187, 98, .04); }
-.health-row strong { color: var(--text); font-size: 12px; font-weight: 560; white-space: nowrap; }
+/* 名称列可收缩 + 省略号：长 env 键名（如 OPS_DINGTALK_PUSH_OPEN_DING_ID）不再溢出压到徽章上；
+   全名在行内 mono 备注行（.health-row__key / note）里仍可完整看到。 */
+.health-row strong { min-width: 0; overflow: hidden; color: var(--text); font-size: 12px; font-weight: 560; text-overflow: ellipsis; white-space: nowrap; }
 .health-row__meta { overflow: hidden; color: var(--text-dim); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .health-row__key { color: var(--text-dim); font: 9px ui-monospace, monospace; letter-spacing: .05em; white-space: nowrap; }
 .health-row__note { grid-column: 2 / -1; margin: 0; color: var(--text-soft); font-size: 11px; line-height: 1.6; }
@@ -887,6 +889,11 @@ select { padding: 6px 28px 6px 9px; }
   .health-row__meta, .health-row__key { display: none; }
   .health-row__note { grid-column: 1 / -1; }
 }
+
+/* 健康面板扩展（V2 datasource 批次）：现场重检（按组）+ 凭据续期。只沿用既有 :root token。 */
+.health-section__tools { display: flex; align-items: center; gap: 9px; margin-left: auto; }
+.health-section__checked { color: var(--text-dim); font: 9px ui-monospace, monospace; letter-spacing: .04em; }
+.health-renew__idle { margin: 0; padding: 10px 14px; color: var(--text-dim); font-size: 11px; line-height: 1.8; }
 
 /* 拓新雷达视图（F5）：只读线索快照 + 分桶统计 + 筛选/展开行。全部沿用既有 token；
    amber 淡底 rgba(240,187,98,α) 为屋内既有字面量惯例（同 .status-badge--amber / .health-row 行底）。 */

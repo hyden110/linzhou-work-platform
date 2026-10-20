@@ -7,6 +7,8 @@
  * 响应投影里绝无 value 字段；错误文案绝不回显 Cookie。
  */
 
+import { composeErrorMessage } from "./error-message.ts";
+
 const PROFILE_TIMEOUT_MS = 10_000;
 /** 桥侧判活子进程硬超时 20s，前端留 5s 余量。 */
 const TEST_TIMEOUT_MS = 25_000;
@@ -278,6 +280,5 @@ export function profileErrorMessage(error: unknown): string {
   };
   const code = error instanceof ProfileClientError ? error.code : "unavailable";
   const base = messages[code] ?? "本地桥未启动，请确认已在本机运行 npm run dev:function 后重试。";
-  const detail = error instanceof ProfileClientError && error.detail ? ` ${error.detail}` : "";
-  return `${base}${detail}`;
+  return composeErrorMessage(base, error instanceof ProfileClientError ? error.detail : "");
 }

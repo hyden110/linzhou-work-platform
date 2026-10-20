@@ -8,6 +8,8 @@
  * 刷新为显式手动触发（12h TTL 低成本口径）：无自动轮询。
  */
 
+import { composeErrorMessage } from "./error-message.ts";
+
 const LEADS_TIMEOUT_MS = 660_000; /* 桥侧拉取上限（dws record query 600s）+ 网络余量 */
 
 const SAFE_ERRORS = [
@@ -273,6 +275,5 @@ export function leadsErrorMessage(error: unknown): string {
   };
   const code = error instanceof LeadsClientError ? error.code : "unavailable";
   const base = messages[code] ?? "本地桥未启动，请确认已在本机运行 npm run dev:function 后重试。";
-  const detail = error instanceof LeadsClientError && error.detail ? ` ${error.detail}` : "";
-  return `${base}${detail}`;
+  return composeErrorMessage(base, error instanceof LeadsClientError ? error.detail : "");
 }

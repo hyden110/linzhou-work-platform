@@ -43,3 +43,62 @@ export interface HealthSnapshot {
   readonly cli: readonly HealthCliRow[];
   readonly caps: readonly HealthCapRow[];
 }
+
+/* ---------------- 现场重检（check）与登录态续期（renew） ---------------- */
+
+export type HealthErrorCode =
+  | "health_invalid_request"
+  | "health_invalid_group"
+  | "health_busy"
+  | "health_unavailable"
+  | "method_not_allowed";
+
+export class HealthBridgeError extends Error {
+  readonly code: HealthErrorCode;
+
+  constructor(code: HealthErrorCode, message: string) {
+    super(message);
+    this.name = "HealthBridgeError";
+    this.code = code;
+  }
+}
+
+/**
+ * 路由表说明：dev/local-router.ts 属禁改文件，本桥自带 handle(request) 子路由并导出
+ * HEALTH_ROUTES 供接线；GET /local/health 保持 local-router 既有显式接线不动
+ * （handle 对非本表路径一律返回 undefined）。
+ */
+export const HEALTH_ROUTES = [
+  { method: "POST", path: "/local/health/check", operation: "check" },
+  { method: "POST", path: "/local/health/renew", operation: "renew" },
+] as const;
+
+export type HealthGroupName = "bridges" | "cli" | "caps";
+
+/** 各组最近一次现场重检时间（ISO）；未重检过的组沿用上一轮时间戳。 */
+export interface HealthGroupCheckedAt {
+  readonly bridges: string;
+  readonly cli: string;
+  readonly caps: string;
+}
+
+export interface HealthCheckSnapshot extends HealthSnapshot {
+  readonly groupCheckedAt: HealthGroupCheckedAt;
+}
+
+export type HealthRenewState = "ok" | "expired" | "missing" | "error";
+
+export interface HealthRenewRow {
+  /** CLI 稳定键（a1/aliyun/ossutil/dws/qodercli）。 */
+  readonly key: string;
+  readonly state: HealthRenewState;
+  /** 登录态到期时间（ISO，可判定才有；否则空串）。凭据/身份值绝不入行。 */
+  readonly expiresAt: string;
+  /** 一句话结论或脱敏后的失败原因 + 修法。 */
+  readonly note: string;
+}
+
+export interface HealthRenewResult {
+  readonly renewedAt: string;
+  readonly results: readonly HealthRenewRow[];
+}

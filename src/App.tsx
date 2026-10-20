@@ -10,6 +10,8 @@ import { PplFollowupView } from "./components/crm/PplFollowupView";
 import { LeadsView } from "./components/crm/LeadsView";
 import { InboxView } from "./components/InboxView";
 import { OntologyView } from "./components/OntologyView";
+import { DataSourceView } from "./components/DataSourceView";
+import { OkrView } from "./components/OkrView";
 import { ProfileView } from "./components/ProfileView";
 import { NotifyBell } from "./components/NotifyBell";
 import { KnowledgeMapView } from "./components/KnowledgeMapView";
@@ -40,6 +42,7 @@ const viewTitles: Record<ViewId, string> = {
   customers: "客户盘面",
   dingtalk: "钉群盘面",
   lifecycle: "PPL 跟进",
+  okr: "OKR 目标",
   leads: "拓新雷达",
   overview: "总览",
   ask: "AI 问答",
@@ -54,6 +57,7 @@ const viewTitles: Record<ViewId, string> = {
   agents: "数字员工",
   ontology: "本体管理",
   profile: "个人中心",
+  datasources: "数据源管理",
   settings: "设置",
 };
 
@@ -207,6 +211,7 @@ function Workbench() {
     customers: <CustomersView />,
     dingtalk: <DingtalkView />,
     lifecycle: <PplFollowupView />,
+    okr: <OkrView onOpenProfile={() => navigate("profile")} />,
     leads: <LeadsView />,
     overview: <OverviewView {...commonProps} />,
     ask: <AskView {...commonProps} />,
@@ -221,6 +226,7 @@ function Workbench() {
     agents: <AgentsView />,
     ontology: <OntologyView />,
     profile: <ProfileView {...commonProps} />,
+    datasources: <DataSourceView />,
     settings: <SettingsView {...commonProps} />,
   }[activeView];
 
