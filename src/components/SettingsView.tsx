@@ -146,7 +146,7 @@ function buildViewCapabilities(ctx: CapabilityContext): readonly CapabilityRow[]
     { id: "cockpit", name: "驾驶舱", description: "今日待办 / 会议 / @我 + 客户与项目 + 行动队列" },
     { id: "customers", name: "客户盘面", description: "客户池、GAAP 异动与 TOP 榜（鲲鹏 ecid 只读）" },
     { id: "dingtalk", name: "钉群盘面", description: "钉钉群 / 未读 / @我 与客户覆盖核对（dws 只读）" },
-    { id: "wechat", name: "微信台账", description: "微信群快照台账 / 客户绑定 / @我待办与单聊未回 / 客户组织表导入与台账回显（消息正文只出掩码）" },
+    { id: "feishu", name: "飞书台账", description: "飞书群与单聊 / @我消息 / 我的待办（lark-cli 只读投影，消息预览 ≤60 字、open_id 掩码）" },
     { id: "lifecycle", name: "PPL 跟进", description: "在途项目按客户分组、巡检与分层视图（只读）" },
     { id: "okr", name: "OKR 目标", description: "CRD 目标树 / 进展编辑 / dry-run 后逐项确认回写" },
     { id: "leads", name: "拓新雷达", description: "dws aitable 只读拉取的拓新线索分桶" },
@@ -174,7 +174,7 @@ function buildViewCapabilities(ctx: CapabilityContext): readonly CapabilityRow[]
     agents: "凭据 0600 掩码管理（只报已设置/未设置）；出票走 ticket-dry→ticket-confirm 单次消费 token，审计掩码留痕",
     profile: "判活需先粘贴 BUC 会话；未设置时视图如实引导，chrome 自动提取未接入",
     datasources: "刷新仅 supported 分组；建表与续期均需确认闸门，密钥类配置只报「已设置/未设置」",
-    wechat: "快照缺失时如实给 missing 指引，绝不伪造群数据；绑定/解绑是本地台账写（0600 + 备份 + 单飞 + 审计）；客户组织表走 dry→confirm 单次消费 token，导入后 GET /local/wechat/custorg 读回核对；个人 wxid 不出桥",
+    feishu: "lark-cli 发现顺序 FEISHU_CLI_PATH → ~/.qoderwork/bin → ~/.qwenworkcn/bin → PATH；CLI 缺失或 user 身份未授权时如实给 cli_missing / auth_required 指引（含 loginCommand），绝不伪造数据；桥纯只读，绝不代跑登录或发信写命令；缓存 300s + 单飞，单区失败只影响该区",
     settings: "MCP 服务默认关；只读工具面需先建 sak_ key（明文仅创建时出现一次，落盘只有 sha256）；连接器体检只走注入握手，写入需 dry→confirm 且宿主配置默认只读",
   };
   return rows.map((row) => {

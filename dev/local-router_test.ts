@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { createFeishuBridge } from "./feishu-bridge.ts";
 import { createFileRegistry, type ResolvedFile } from "./local-files.ts";
 import { createLocalRouter, type LocalRouterDependencies } from "./local-router.ts";
 import { seriesIdFor } from "./solution-store.ts";
@@ -397,6 +398,46 @@ test("keeps answering when the archive cannot be written", async () => {
     const payload = await response.json() as { ok: boolean; data: { title: string } };
     assert.equal(payload.ok, true);
     assert.equal(payload.data.title, SOLUTION_PLAN.title);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("delegates the feishu ledger and no longer routes the retired wechat ledger", async () => {
+  const fixture = await createFixture();
+  const calls: string[] = [];
+  try {
+    const { router } = createTestRouter(fixture, [], {
+      // 候选全不存在 → 桥如实回 cli_missing 诚实外壳，一条 lark-cli 都不跑
+      feishuBridge: createFeishuBridge({
+        candidates: [join(fixture.root, "missing-lark-cli")],
+        runner: async (args) => {
+          calls.push(args.join(" "));
+          return { code: 0, stdout: "", stderr: "" };
+        },
+      }),
+    });
+
+    const response = await router(get("/local/feishu"));
+    assert.equal(response.status, 200);
+    const payload = await response.json() as {
+      ok: boolean;
+      data: { status: string; chats: unknown[]; atMe: unknown[]; tasks: unknown[]; sectionErrors: Record<string, string> };
+    };
+    assert.equal(payload.ok, true);
+    assert.equal(payload.data.status, "cli_missing");
+    assert.deepEqual(payload.data.chats, []);
+    assert.deepEqual(payload.data.atMe, []);
+    assert.deepEqual(payload.data.tasks, []);
+    assert.equal(payload.data.sectionErrors.chats !== "", true, "缺 CLI 时逐区说明不得为空");
+    assert.deepEqual(calls, [], "cli_missing 时不得执行任何命令");
+
+    // 微信台账视图已下线：/local/wechat* 不再被任何桥接管，落主路由终态 405（无端点认领）
+    const retired = await router(get("/local/wechat"));
+    assert.equal(retired.status, 405);
+    assert.equal((await retired.json() as { error: string }).error, "method_not_allowed");
+    const retiredCustorg = await router(get("/local/wechat/custorg"));
+    assert.equal(retiredCustorg.status, 405);
   } finally {
     await fixture.cleanup();
   }

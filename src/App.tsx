@@ -6,7 +6,7 @@ import { CockpitView } from "./components/crm/CockpitView";
 import { CrmProvider } from "./components/crm/CrmProvider";
 import { CustomersView } from "./components/crm/CustomersView";
 import { DingtalkView } from "./components/crm/DingtalkView";
-import { WechatView } from "./components/wechat/WechatView";
+import { FeishuView } from "./components/feishu/FeishuView";
 import { PplFollowupView } from "./components/crm/PplFollowupView";
 import { LeadsView } from "./components/crm/LeadsView";
 import { InboxView } from "./components/InboxView";
@@ -42,7 +42,7 @@ const viewTitles: Record<ViewId, string> = {
   cockpit: "驾驶舱",
   customers: "客户盘面",
   dingtalk: "钉群盘面",
-  wechat: "微信台账",
+  feishu: "飞书台账",
   lifecycle: "PPL 跟进",
   okr: "OKR 目标",
   leads: "拓新雷达",
@@ -212,7 +212,7 @@ function Workbench() {
     cockpit: <CockpitView />,
     customers: <CustomersView />,
     dingtalk: <DingtalkView />,
-    wechat: <WechatView />,
+    feishu: <FeishuView />,
     lifecycle: <PplFollowupView />,
     okr: <OkrView onOpenProfile={() => navigate("profile")} />,
     leads: <LeadsView />,
