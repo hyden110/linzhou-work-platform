@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, TrendingDown, TrendingUp } from "lucide-react";
 import {
   customerLifecycle,
@@ -12,6 +12,13 @@ import {
   type GaapAlertTier,
   type OverviewBoard,
 } from "../../lib/crm-model";
+import {
+  formatThresholdNote,
+  readGaapThresholds,
+  subscribeGaapThresholds,
+  type GaapThresholds,
+  type ThresholdStorageLike,
+} from "../../lib/gaap-thresholds";
 import type { TopChecks } from "../../lib/crm-types";
 import { ViewHeading } from "../shared";
 import { useCrm } from "./CrmProvider";
@@ -19,6 +26,11 @@ import { CustomerDrawer } from "./CustomerDrawer";
 import { CrmGate, MetricCard, RefreshControl, SourceBanner, formatDateTime, formatGaap } from "./crm-shared";
 
 const TABLE_LIMIT = 50;
+
+/** 浏览器环境外（构建/测试）安全降级为 null：读取端回退默认阈值。 */
+function browserThresholdStorage(): ThresholdStorageLike | null {
+  return typeof localStorage === "undefined" ? null : localStorage;
+}
 
 function countNote(board: OverviewBoard, listCount: number): string {
   if (board.customerCount === null) return "总览客户数缺失，等待下一次刷新";
@@ -72,11 +84,13 @@ function GaapAnomalyPanel({
   alerts,
   hasRateData,
   generatedAt,
+  note,
   onOpen,
 }: {
   alerts: readonly GaapAlert[];
   hasRateData: boolean;
   generatedAt: string | null;
+  note: string;
   onOpen: (cid: string) => void;
 }) {
   return (
@@ -87,9 +101,7 @@ function GaapAnomalyPanel({
           {alerts.length} 条异动 · 数据时效：{generatedAt ? formatDateTime(generatedAt) : "未知"}
         </span>
       </header>
-      <p className="gaap-alerts__note">
-        口径：昨日 GAAP 环比；阈值 T3 环比 ±50% / T2 涨跌 ±30 万 / T1 涨跌 ±5 万，多档取最高档；上月基数低于 30 万只报环比档并标「低基数」。
-      </p>
+      <p className="gaap-alerts__note">{note}</p>
       {!hasRateData
         ? <p className="crm-muted">无环比数据（快照缺失昨日环比字段），暂无法检测。</p>
         : alerts.length === 0
@@ -109,6 +121,9 @@ export function CustomersView() {
   const { snapshot } = useCrm();
   const [openCid, setOpenCid] = useState("");
   const closeDrawer = useCallback(() => setOpenCid(""), []);
+  const [thresholds, setThresholds] = useState<GaapThresholds>(() => readGaapThresholds(browserThresholdStorage()));
+
+  useEffect(() => subscribeGaapThresholds(setThresholds), []);
 
   const lifecycleRows = useMemo(() => {
     if (!snapshot) return new Map<string, CustomerLifecycle>();
@@ -122,7 +137,10 @@ export function CustomersView() {
   const board = useMemo(() => (snapshot ? overviewBoard(snapshot) : null), [snapshot]);
   const top = useMemo(() => (snapshot ? topBoard(snapshot) : null), [snapshot]);
   const rows = useMemo(() => (snapshot ? customersByGaap(snapshot.customers) : []), [snapshot]);
-  const alerts = useMemo(() => (snapshot ? gaapAnomalies(snapshot.customers) : []), [snapshot]);
+  const alerts = useMemo(
+    () => (snapshot ? gaapAnomalies(snapshot.customers, thresholds) : []),
+    [snapshot, thresholds],
+  );
   const hasRateData = useMemo(
     () => Boolean(snapshot?.customers.some((customer) => customer.yesterdayGaapRate !== null && customer.yesterdayGaapRate !== undefined)),
     [snapshot],
@@ -171,6 +189,7 @@ export function CustomersView() {
               alerts={alerts}
               hasRateData={hasRateData}
               generatedAt={snapshot.generatedAt}
+              note={formatThresholdNote(thresholds)}
               onOpen={setOpenCid}
             />
 

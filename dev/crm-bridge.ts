@@ -21,6 +21,7 @@ const MAX_ANSWER_CHARS = 4000;
 const MAX_CONCURRENT_INSIGHTS = 2;
 const FINAL_MARKER = "========== 最终结果 ==========";
 const CID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+export { CID_PATTERN };
 const MESSAGE_ID_PATTERN = /answerMessageId:\s*([A-Za-z0-9_-]{8,128})/;
 const ANSWER_ID_PATTERN = /^[A-Za-z0-9_-]{8,128}$/;
 const REPORT_URL_PATTERN = /^https?:\/\/[^\s"'<>\\]{1,480}$/;
@@ -168,6 +169,7 @@ function customerName(snapshot: unknown, cid: string): string | undefined {
   const cleaned = match.name.replace(/[\u0000-\u001f\u007f「」]/g, "").trim().slice(0, 80);
   return cleaned || undefined;
 }
+export { customerName };
 
 export function insightQuestion(name: string, cid: string): string {
   return `请分析客户「${name}」（CID ${cid}）近期的消耗异动，说明主要变化、可能原因和需要关注的风险点。`;

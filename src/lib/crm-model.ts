@@ -9,6 +9,7 @@ import type {
   TopCustomerItem,
   UnreadItem,
 } from "./crm-types";
+import { DEFAULT_GAAP_THRESHOLDS, type GaapThresholds } from "./gaap-thresholds.ts";
 
 export type StageId = "A" | "B" | "C" | "D";
 
@@ -189,17 +190,12 @@ export function customersByGaap(customers: readonly CustomerItem[]): CustomerIte
 // GAAP 异动分析：昨日环比 / 绝对变动检测（阈值可配，纯函数可测）
 // ---------------------------------------------------------------------------
 
-/** 三档阈值 + 低基数门槛（默认值可配；MVP-2 按真实分布再标定）。 */
-export const GAAP_ALERT_THRESHOLDS = {
-  /** T1 提示档：昨日环比涨跌额绝对值（元）。 */
-  absoluteNotice: 50_000,
-  /** T2 关注档：昨日环比涨跌额绝对值（元）。 */
-  absoluteWatch: 300_000,
-  /** T3 严重档：昨日环比比例绝对值（百分点，yesterdayGaapRate 即百分比单位）。 */
-  rateSevere: 50,
-  /** 低基数门槛（元）：上月 GAAP 低于此值时绝对档不上报，环比命中标「低基数」。 */
-  lowBaseGaap: 300_000,
-};
+/**
+ * 三档阈值 + 低基数门槛：单一事实源在 gaap-thresholds.ts（工单 #10074 R1 配置化）。
+ * 保留既有导出名（特征基线与既有引用沿用）；判定代码不得再持有阈值字面量副本，
+ * 一律经 thresholds 参数取值，默认值 = 现状值（判定语义与默认结果零变化）。
+ */
+export const GAAP_ALERT_THRESHOLDS = DEFAULT_GAAP_THRESHOLDS;
 
 export type GaapAlertTier = "T1" | "T2" | "T3";
 export type GaapAlertDirection = "up" | "down";
@@ -222,8 +218,11 @@ export interface GaapAlert {
 
 const TIER_RANK: Record<GaapAlertTier, number> = { T1: 1, T2: 2, T3: 3 };
 
-/** 单客户异动判定；无环比 / 环比为 0 / 昨日值缺失 → null（不上报）。 */
-export function gaapAnomaly(customer: CustomerItem): GaapAlert | null {
+/** 单客户异动判定；无环比 / 环比为 0 / 昨日值缺失 → null（不上报）。阈值可注入（缺省=现状默认）。 */
+export function gaapAnomaly(
+  customer: CustomerItem,
+  thresholds: GaapThresholds = GAAP_ALERT_THRESHOLDS,
+): GaapAlert | null {
   const rate = customer.yesterdayGaapRate;
   const yesterday = customer.yesterdayGaap;
   if (rate === null || rate === undefined || rate === 0 || yesterday === null || yesterday === undefined) {
@@ -231,7 +230,7 @@ export function gaapAnomaly(customer: CustomerItem): GaapAlert | null {
   }
   const direction: GaapAlertDirection = rate > 0 ? "up" : "down";
   const basis = customer.lastMonthGaap ?? null;
-  const lowBase = (customer.lastMonthGaap ?? 0) < GAAP_ALERT_THRESHOLDS.lowBaseGaap;
+  const lowBase = (customer.lastMonthGaap ?? 0) < thresholds.lowBaseGaap;
 
   // diff：优先用鲲鹏自带的涨跌额；旧快照缺失时按 rate 反推（rate > -100% 才有定义）。
   let diff: number | null = customer.yesterdayGaapDiff ?? null;
@@ -242,11 +241,11 @@ export function gaapAnomaly(customer: CustomerItem): GaapAlert | null {
   }
 
   const tiers: GaapAlertTier[] = [];
-  if (Math.abs(rate) >= GAAP_ALERT_THRESHOLDS.rateSevere) tiers.push("T3");
+  if (Math.abs(rate) >= thresholds.rateSevere) tiers.push("T3");
   // 绝对档受低基数门槛约束：上月基数不足时不报绝对档（避免小客户噪声）。
   if (diff !== null && !lowBase) {
-    if (Math.abs(diff) >= GAAP_ALERT_THRESHOLDS.absoluteWatch) tiers.push("T2");
-    else if (Math.abs(diff) >= GAAP_ALERT_THRESHOLDS.absoluteNotice) tiers.push("T1");
+    if (Math.abs(diff) >= thresholds.absoluteWatch) tiers.push("T2");
+    else if (Math.abs(diff) >= thresholds.absoluteNotice) tiers.push("T1");
   }
   if (tiers.length === 0) return null;
   const tier = tiers.reduce((best, next) => (TIER_RANK[next] > TIER_RANK[best] ? next : best));
@@ -254,11 +253,14 @@ export function gaapAnomaly(customer: CustomerItem): GaapAlert | null {
   return { customer, direction, tier, rate, diff, basis, lowBase, estimatedDiff };
 }
 
-/** 全量客户异动检测：按档位降序、同档按 |rate| 降序。 */
-export function gaapAnomalies(customers: readonly CustomerItem[]): GaapAlert[] {
+/** 全量客户异动检测：按档位降序、同档按 |rate| 降序。阈值透传给单客户判定。 */
+export function gaapAnomalies(
+  customers: readonly CustomerItem[],
+  thresholds: GaapThresholds = GAAP_ALERT_THRESHOLDS,
+): GaapAlert[] {
   return customers
     .flatMap((customer) => {
-      const alert = gaapAnomaly(customer);
+      const alert = gaapAnomaly(customer, thresholds);
       return alert ? [alert] : [];
     })
     .sort((a, b) =>

@@ -1,4 +1,10 @@
-import type { CrmSnapshot, InsightRecord, RefreshStatus } from "./crm-types";
+import type {
+  AttributionRecord,
+  CrmAiExplainRecord,
+  CrmSnapshot,
+  InsightRecord,
+  RefreshStatus,
+} from "./crm-types";
 
 const SAFE_ERRORS = new Set([
   "snapshot_unavailable",
@@ -10,6 +16,9 @@ const SAFE_ERRORS = new Set([
   "rate_limited",
   "origin_not_allowed",
   "host_not_allowed",
+  "not_configured",
+  "attribution_missing",
+  "unconfigured",
 ]);
 
 export class CrmClientError extends Error {
@@ -76,6 +85,20 @@ function isInsight(value: unknown): value is InsightRecord {
   return isRecord(value) && typeof value.cid === "string" && ["running", "done", "failed"].includes(String(value.state));
 }
 
+function isAttribution(value: unknown): value is AttributionRecord {
+  return isRecord(value)
+    && value.schemaVersion === 1
+    && typeof value.cid === "string"
+    && ["running", "done", "failed"].includes(String(value.state))
+    && typeof value.reportResourceId === "string"
+    && Array.isArray(value.rows);
+}
+
+function isExplain(value: unknown): value is CrmAiExplainRecord {
+  return isRecord(value) && value.schemaVersion === 1 && typeof value.cid === "string"
+    && ["running", "done", "failed"].includes(String(value.state));
+}
+
 export async function fetchCrmSnapshot(fetchImpl: typeof fetch = fetch): Promise<{ snapshot: CrmSnapshot; refresh: RefreshStatus | null }> {
   const payload = await request("/local/crm/snapshot", { method: "GET" }, fetchImpl);
   if (!isSnapshot(payload.data)) throw new CrmClientError("invalid_response");
@@ -111,6 +134,48 @@ export async function startInsight(cid: string, fetchImpl: typeof fetch = fetch)
   return payload.data;
 }
 
+export async function fetchAttribution(cid: string, fetchImpl: typeof fetch = fetch): Promise<AttributionRecord | null> {
+  const payload = await request("/local/crm/attribution", { method: "GET", query: { cid } }, fetchImpl);
+  if (payload.data === null) return null;
+  if (!isAttribution(payload.data)) throw new CrmClientError("invalid_response");
+  return payload.data;
+}
+
+export async function startAttribution(
+  cid: string,
+  options: { force?: boolean } = {},
+  fetchImpl: typeof fetch = fetch,
+): Promise<AttributionRecord> {
+  const payload = await request("/local/crm/attribution", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ cid, ...(options.force ? { force: true } : {}) }),
+  }, fetchImpl);
+  if (!isAttribution(payload.data)) throw new CrmClientError("invalid_response");
+  return payload.data;
+}
+
+export async function fetchExplain(cid: string, fetchImpl: typeof fetch = fetch): Promise<CrmAiExplainRecord | null> {
+  const payload = await request("/local/crm/attribution/explain", { method: "GET", query: { cid } }, fetchImpl);
+  if (payload.data === null) return null;
+  if (!isExplain(payload.data)) throw new CrmClientError("invalid_response");
+  return payload.data;
+}
+
+export async function startExplain(
+  cid: string,
+  options: { force?: boolean } = {},
+  fetchImpl: typeof fetch = fetch,
+): Promise<CrmAiExplainRecord> {
+  const payload = await request("/local/crm/attribution/explain", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ cid, ...(options.force ? { force: true } : {}) }),
+  }, fetchImpl);
+  if (!isExplain(payload.data)) throw new CrmClientError("invalid_response");
+  return payload.data;
+}
+
 export function crmErrorMessage(error: unknown): string {
   const code = error instanceof CrmClientError ? error.code : "unavailable";
   const messages: Record<string, string> = {
@@ -120,6 +185,9 @@ export function crmErrorMessage(error: unknown): string {
     busy: "FBI 解读任务较多，请稍后再试。",
     rate_limited: "请求过于频繁，请稍后再试。",
     invalid_response: "本机服务返回了无法识别的数据。",
+    not_configured: "FBI 报表未接入：请在 .env.local 配置 FBI_REPORT_RESOURCE_ID 后重启本机服务。",
+    attribution_missing: "请先完成 FBI 产品拆分，再请 CRM AI 助理解读。",
+    unconfigured: "CRM AI 助理未配置：请在 .env.local 配置 CRM_AI_OPEN_DINGTALK_ID 后重启本机服务。",
   };
   return messages[code] ?? "请求未完成，请稍后重试。";
 }

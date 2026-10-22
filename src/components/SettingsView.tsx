@@ -16,6 +16,20 @@ import {
   type LeadsSnapshot,
 } from "../lib/leads-client";
 import {
+  DEFAULT_GAAP_THRESHOLDS,
+  GAAP_THRESHOLD_FIELDS,
+  GAAP_THRESHOLD_META,
+  formatThresholdAmount,
+  formatThresholdNote,
+  parseGaapThresholdsForm,
+  readGaapThresholds,
+  resetGaapThresholds,
+  setGaapThresholds,
+  subscribeGaapThresholds,
+  type GaapThresholdField,
+  type GaapThresholds,
+} from "../lib/gaap-thresholds";
+import {
   readDemoMode,
   setDemoMode,
   shouldMask,
@@ -453,6 +467,96 @@ export function DemoModeBadge() {
   );
 }
 
+/* ---------- GAAP 异动阈值区块（#10074 R1） ---------- */
+
+function thresholdDefaultText(field: GaapThresholdField): string {
+  const value = DEFAULT_GAAP_THRESHOLDS[field];
+  return field === "rateSevere" ? `${value}%` : formatThresholdAmount(value);
+}
+
+function GaapThresholdSection() {
+  const [thresholds, setThresholds] = useState(() => readGaapThresholds(browserStorage()));
+  const [form, setForm] = useState<Record<GaapThresholdField, string>>(() => ({
+    absoluteNotice: String(thresholds.absoluteNotice),
+    absoluteWatch: String(thresholds.absoluteWatch),
+    rateSevere: String(thresholds.rateSevere),
+    lowBaseGaap: String(thresholds.lowBaseGaap),
+  }));
+
+  useEffect(() => subscribeGaapThresholds(setThresholds), []);
+
+  const result = parseGaapThresholdsForm(form);
+  const dirty = GAAP_THRESHOLD_FIELDS.some((field) => form[field] !== String(thresholds[field]));
+
+  const save = useCallback(() => {
+    if (!result.ok || !result.thresholds) return;
+    if (setGaapThresholds(browserStorage(), result.thresholds)) {
+      setForm({
+        absoluteNotice: String(result.thresholds.absoluteNotice),
+        absoluteWatch: String(result.thresholds.absoluteWatch),
+        rateSevere: String(result.thresholds.rateSevere),
+        lowBaseGaap: String(result.thresholds.lowBaseGaap),
+      });
+    }
+  }, [result]);
+
+  const reset = useCallback(() => {
+    resetGaapThresholds(browserStorage());
+    setForm({
+      absoluteNotice: String(DEFAULT_GAAP_THRESHOLDS.absoluteNotice),
+      absoluteWatch: String(DEFAULT_GAAP_THRESHOLDS.absoluteWatch),
+      rateSevere: String(DEFAULT_GAAP_THRESHOLDS.rateSevere),
+      lowBaseGaap: String(DEFAULT_GAAP_THRESHOLDS.lowBaseGaap),
+    });
+  }, []);
+
+  return (
+    <section className="panel settings-panel" aria-label="GAAP 异动阈值">
+      <div className="panel__header">
+        <div><span className="eyebrow">GAAP THRESHOLDS / 08</span><h2>GAAP 异动阈值</h2></div>
+        <span className="settings-panel__hint">仅影响异动判定，不改变数据源与口径</span>
+      </div>
+      <div className="settings-panel__body">
+        <p className="settings-note">
+          四项判定参数保存后立即生效并持久化到本机（localStorage），客户盘面的异动集合与口径文案随配置同步变化；
+          非法输入会被阻止并给出字段级错误，原有效配置不被破坏。
+        </p>
+        <div className="settings-threshold-grid">
+          {GAAP_THRESHOLD_FIELDS.map((field) => {
+            const meta = GAAP_THRESHOLD_META[field];
+            return (
+              <label key={field} className="settings-threshold-field">
+                <span>{meta.label}</span>
+                <span className="settings-threshold-field__input">
+                  <input
+                    type="number"
+                    value={form[field]}
+                    onChange={(event) => setForm({ ...form, [field]: event.target.value })}
+                    aria-label={`${meta.label}（${meta.unit}）`}
+                    aria-invalid={Boolean(result.errors[field])}
+                  />
+                  <small>{meta.unit}</small>
+                </span>
+                <small className="settings-threshold-field__hint">{meta.hint}；默认 {thresholdDefaultText(field)}</small>
+                {result.errors[field] && (
+                  <small className="settings-threshold-field__error" role="alert">{result.errors[field]}</small>
+                )}
+              </label>
+            );
+          })}
+        </div>
+        <div className="settings-threshold-actions">
+          <button type="button" className="primary-button" onClick={save} disabled={!result.ok || !dirty}>
+            保存
+          </button>
+          <button type="button" className="text-button" onClick={reset}>恢复默认</button>
+          <span className="settings-threshold-actions__current">当前生效：{formatThresholdNote(thresholds)}</span>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 /* ---------- 能力清单区块 ---------- */
 
 function CapabilityRowView({ row }: { row: CapabilityRow }) {
@@ -717,6 +821,7 @@ export function SettingsView({ index }: ViewProps) {
         aside={<StatusBadge tone="blue">只读为主 · MCP 写操作两步确认</StatusBadge>}
       />
       <DemoModeSection enabled={demoEnabled} onToggle={toggleDemoMode} />
+      <GaapThresholdSection />
       <CapabilitySection viewRows={viewRows} globalRows={globalRows} />
       <FreshnessSection
         rows={freshnessRows}

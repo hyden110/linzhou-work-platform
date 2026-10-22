@@ -115,6 +115,28 @@
 .crm-insight__body small { color: var(--text-dim); font: 10px ui-monospace, monospace; }
 .crm-insight__answer { margin-top: 8px; padding: 12px; border-radius: 6px; color: var(--text-soft); background: #0a1114; font-size: 12px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; }
 
+/* GAAP 异动归因（抽屉，#10074 R2）：结构化拆分 + 对账 + CRM AI 解释。 */
+.crm-attribution__table { margin-top: 10px; }
+.crm-table td.is-up { color: var(--mint-soft); }
+.crm-table td.is-down { color: var(--danger); }
+.crm-attribution__expand { display: inline-flex; align-items: center; justify-content: center; margin-right: 4px; padding: 2px; border: 1px solid var(--line); border-radius: 4px; color: var(--text-dim); vertical-align: middle; }
+.crm-attribution__expand:hover { border-color: rgba(67,225,180,.3); color: var(--mint-soft); }
+.crm-attribution__expand svg { transition: transform .15s ease; }
+.crm-attribution__expand svg.is-open { transform: rotate(90deg); }
+.crm-attribution__child td { color: var(--text-dim); }
+.crm-attribution__recon { display: grid; grid-template-columns: auto auto; justify-content: start; column-gap: 22px; row-gap: 3px; margin: 10px 0 0; padding: 10px 12px; border: 1px dashed var(--line); border-radius: 7px; }
+.crm-attribution__recon span { color: var(--text-dim); font-size: 10px; }
+.crm-attribution__recon b { color: var(--text-soft); font: 11px ui-monospace, monospace; }
+.crm-attribution__recon small { grid-column: 1 / -1; color: var(--text-dim); font-size: 10px; line-height: 1.6; }
+.crm-attribution__recon.is-mismatch { border-color: rgba(240,187,98,.45); }
+.crm-attribution__recon.is-mismatch small { color: var(--amber); }
+.crm-attribution__notes { margin: 10px 0 0; padding: 0; list-style: none; color: var(--text-dim); font-size: 10px; line-height: 1.7; }
+.crm-attribution__notes li::before { content: "· "; }
+.crm-attribution__explain { margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--line); }
+.crm-attribution__explain > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.crm-attribution__explain h4 { margin: 0; font-size: 12px; font-weight: 600; }
+.crm-attribution__explain .eyebrow { margin-right: 6px; }
+
 .crm-metrics--four { grid-template-columns: repeat(4, 1fr); }
 .crm-metrics--five { grid-template-columns: repeat(5, 1fr); }
 .crm-metrics--seven { grid-template-columns: repeat(4, 1fr); }

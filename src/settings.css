@@ -206,6 +206,20 @@ html.demo-on .leads-row__name {
 .settings-config-row strong { color: var(--text-soft); font-size: 11px; font-weight: 500; }
 .settings-config-row small { color: var(--text-dim); font-size: 10px; line-height: 1.5; }
 
+/* ---- GAAP 异动阈值 ---- */
+.settings-threshold-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; }
+.settings-threshold-field { display: flex; flex-direction: column; gap: 4px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 6px; background: rgba(255, 255, 255, .012); }
+.settings-threshold-field > span:first-child { color: var(--text-soft); font-size: 11px; font-weight: 550; }
+.settings-threshold-field__input { display: flex; align-items: baseline; gap: 6px; }
+.settings-threshold-field__input input { width: 100%; min-width: 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: 5px; background: #0a1114; color: var(--text); font: 12px ui-monospace, monospace; }
+.settings-threshold-field__input input:focus { outline: none; border-color: rgba(67, 225, 180, .45); }
+.settings-threshold-field__input small { flex: none; color: var(--text-dim); font-size: 10px; }
+.settings-threshold-field__hint { color: var(--text-dim); font-size: 10px; line-height: 1.5; }
+.settings-threshold-field__error { color: var(--danger); font-size: 10px; }
+.settings-threshold-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.settings-threshold-actions .primary-button { padding: 6px 14px; border-radius: 6px; }
+.settings-threshold-actions__current { flex: 1 1 280px; margin: 0; color: var(--text-dim); font-size: 10px; line-height: 1.6; }
+
 @media (max-width: 720px) {
   .settings-cap-row { grid-template-columns: minmax(0, 1fr) auto; }
   .settings-cap-row__desc { grid-column: 1 / -1; white-space: normal; }

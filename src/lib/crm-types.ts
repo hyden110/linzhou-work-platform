@@ -194,3 +194,43 @@ export interface InsightRecord {
   answer: string | null;
   error: string | null;
 }
+
+/** FBI 产品拆分行（业绩分成口径；桥已清洗，current/previous 为日 GAAP 元或 null）。 */
+export interface AttributionRow {
+  level1: string;
+  level2: string | null;
+  current: number | null;
+  previous: number | null;
+}
+
+/** GAAP 异动归因记录（FBI 报表问答产物；answerMessageId 已在路由层剥离）。 */
+export interface AttributionRecord {
+  schemaVersion: 1;
+  cid: string;
+  state: "running" | "done" | "failed";
+  createdAt: string;
+  finishedAt: string | null;
+  reportResourceId: string;
+  currentDate: string | null;
+  previousDate: string | null;
+  rows: AttributionRow[];
+  /** done 且 rows 为空时的数据不足原因（如 no_rows）；其余为 null。 */
+  reason: string | null;
+  /** 解析时被丢弃的行数（明示，不静默丢）。 */
+  droppedRows: number;
+  error: string | null;
+}
+
+/** 「CRM AI 助理」解读记录（1:1 单聊问答产物；问题由系统模板生成）。 */
+export interface CrmAiExplainRecord {
+  schemaVersion: 1;
+  cid: string;
+  state: "running" | "done" | "failed";
+  createdAt: string;
+  finishedAt: string | null;
+  question: string | null;
+  askedAt: string | null;
+  answer: string | null;
+  answerAt: string | null;
+  error: string | null;
+}

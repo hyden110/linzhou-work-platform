@@ -16,6 +16,12 @@ import {
 } from "./solution-assistant.ts";
 import { createSolutionStore, type SolutionStore } from "./solution-store.ts";
 import { createCrmBridge, type CrmBridge, type InsightRecord } from "./crm-bridge.ts";
+import {
+  createCrmAttributionBridge,
+  type AttributionRecord,
+  type CrmAttributionBridge,
+} from "./crm-attribution-bridge.ts";
+import { createCrmAiBridge, type CrmAiBridge } from "./crm-ai-bridge.ts";
 import { createOpsBridge, type OpsBridge } from "./ops-bridge.ts";
 import { createMaasBridge, type MaasBridge } from "./maas-bridge.ts";
 import { createPplInspectionBridge, type PplInspectionBridge } from "./ppl-inspection-bridge.ts";
@@ -138,6 +144,8 @@ export interface LocalRouterDependencies {
   readonly solutionStore?: SolutionStore;
   readonly solutionsDir?: string;
   readonly crmBridge?: CrmBridge;
+  readonly crmAttributionBridge?: CrmAttributionBridge;
+  readonly crmAiBridge?: CrmAiBridge;
   readonly opsBridge?: OpsBridge;
   readonly maasBridge?: MaasBridge;
   readonly fbiMetricsBridge?: FbiMetricsBridge;
@@ -199,6 +207,12 @@ function publicInsight(record: InsightRecord) {
   return visible;
 }
 
+/** FBI 会话 id 不出桥（同 publicInsight 口径）。 */
+function publicAttribution(record: AttributionRecord) {
+  const { answerMessageId: _answerMessageId, ...visible } = record;
+  return visible;
+}
+
 export function createLocalRouter(dependencies: LocalRouterDependencies) {
   const registry = dependencies.registry ?? createFileRegistry();
   const openFile = dependencies.openFile ?? openWithDefaultApplication;
@@ -207,6 +221,8 @@ export function createLocalRouter(dependencies: LocalRouterDependencies) {
   const solutionStore = dependencies.solutionStore
     ?? createSolutionStore(dependencies.solutionsDir ?? SOLUTIONS_PATH);
   const crmBridge = dependencies.crmBridge ?? createCrmBridge();
+  const crmAttributionBridge = dependencies.crmAttributionBridge ?? createCrmAttributionBridge();
+  const crmAiBridge = dependencies.crmAiBridge ?? createCrmAiBridge();
   const opsBridge = dependencies.opsBridge ?? createOpsBridge();
   const maasBridge = dependencies.maasBridge ?? createMaasBridge();
   const fbiMetricsBridge = dependencies.fbiMetricsBridge ?? createFbiMetricsBridge();
@@ -353,6 +369,57 @@ export function createLocalRouter(dependencies: LocalRouterDependencies) {
         return jsonResponse({ ok: false, error: result.error }, status, status === 429 ? { "Retry-After": "60" } : {});
       }
       return jsonResponse({ ok: true, data: publicInsight(result.record), reused: result.reused }, result.reused ? 200 : 202);
+    }
+
+    // GAAP 异动归因（#10074 R2.2）：GET 读记录（running 也返回，前端轮询）；
+    // POST 触发 FBI 报表问答（未强制刷新时复用 done 记录）。answerMessageId 不出桥。
+    if (route === "/local/crm/attribution" && request.method === "GET") {
+      const record = await crmAttributionBridge.attribution(url.searchParams.get("cid") ?? "");
+      return jsonResponse({ ok: true, data: record ? publicAttribution(record) : null });
+    }
+
+    if (route === "/local/crm/attribution" && request.method === "POST") {
+      const body = await readJsonBody(request);
+      const cid = typeof body?.cid === "string" ? body.cid : "";
+      const force = body?.force === true;
+      if (!cid) return jsonResponse({ ok: false, error: "invalid_request" }, 400);
+      const result = await crmAttributionBridge.start(cid, force);
+      if (!result.ok) {
+        const status = result.error === "customer_not_found" ? 404 : result.error === "busy" ? 429 : 400;
+        return jsonResponse(
+          { ok: false, error: result.error === "invalid_cid" ? "invalid_request" : result.error },
+          status,
+          status === 429 ? { "Retry-After": "60" } : {},
+        );
+      }
+      return jsonResponse(
+        { ok: true, data: publicAttribution(result.record), reused: result.reused },
+        result.reused ? 200 : 202,
+      );
+    }
+
+    // 「CRM AI 助理」解读（#10074 R2.3/R3）：仅 1:1 单聊；问题模板由桥在本机组装，
+    // 浏览器只传 cid（+可选 force）。归因未完成前不允许发起（attribution_missing）。
+    if (route === "/local/crm/attribution/explain" && request.method === "GET") {
+      const record = await crmAiBridge.explain(url.searchParams.get("cid") ?? "");
+      return jsonResponse({ ok: true, data: record ?? null });
+    }
+
+    if (route === "/local/crm/attribution/explain" && request.method === "POST") {
+      const body = await readJsonBody(request);
+      const cid = typeof body?.cid === "string" ? body.cid : "";
+      const force = body?.force === true;
+      if (!cid) return jsonResponse({ ok: false, error: "invalid_request" }, 400);
+      const result = await crmAiBridge.startExplain(cid, force);
+      if (!result.ok) {
+        const status = result.error === "customer_not_found" ? 404 : result.error === "busy" ? 429 : 400;
+        return jsonResponse(
+          { ok: false, error: result.error === "invalid_cid" ? "invalid_request" : result.error },
+          status,
+          status === 429 ? { "Retry-After": "5" } : {},
+        );
+      }
+      return jsonResponse({ ok: true, data: result.record, reused: result.reused }, result.reused ? 200 : 202);
     }
 
     if (route === "/local/ops/digest" && request.method === "GET") {
