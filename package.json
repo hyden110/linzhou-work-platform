@@ -19,6 +19,8 @@
     "test:function": "node --experimental-strip-types --test functions/*_test.ts",
     "test:dev": "node --experimental-strip-types --test dev/*_test.ts",
     "test:web": "node --experimental-strip-types --test src/lib/*.test.ts",
+    "test:frontend-ui": "playwright test -c playwright.ui-mock.config.ts",
+    "test:frontend-smoke": "playwright test -c playwright.deploy-smoke.config.ts",
     "check:function": "deno check functions/index.ts"
   },
   "dependencies": {
@@ -45,6 +47,7 @@
     "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.1",
     "@tailwindcss/postcss": "4.2.1",
     "@types/node": "22.19.19",
     "@types/react": "19.2.14",
